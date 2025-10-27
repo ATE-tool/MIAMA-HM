@@ -1,29 +1,29 @@
 ---
-title: "Health Data Manchester"
-author: "Belen Zapata-Diomedi,Marina Berdikhaniva"
-email: "mbzd2@cam.ac.uk, mb2592@cam.ac.uk"
+title: "Health Data"
+author: "Belen Zapata-Diomedi, Marina Berdikhaniva, Steve Pemberton"
+email: "mbzd2@cam.ac.uk, mb2592@cam.ac.uk, steve.pemberton@rmit.edu.au"
 date: today
 format: 
   html:
     code-fold: true
     embed-resources: true
     df-print: paged
+    toc: true
+    number-sections: true
 execute: 
-    message: false
-    warning: false
-toc: true
-number-sections: true
+  echo: false
+  message: false
+  warning: false
 editor_options:
   mode: visual
   markdown:
     wrap: 72
----s
 ---
 
 # Introduction
 
 This document explains and produces estimates for the inputs for the
-health model for JIBE Manchester. The model initially has four stages
+health model for MIAMA. The model initially has four stages
 where individuals are in a healthy state, might become diseased of one
 or more diseases, and die from any causes (all cause mortality). All
 cause mortality is also dependent on diseases status, meaning that if a
@@ -43,11 +43,10 @@ assign initial state as diseased.
 rm(list = ls())
 
 library(tidyverse)  # Includes dplyr, tidyr, readr, ggplot2, purrr, etc.
-library(readxl)   # Read/write Excel files
+library(readxl)     # Read/write Excel files
 library(knitr)      # Report generation
 library(gt)         # Pretty tables
 library(here)       # File path management
-library(base)       # Read RDS files
 library(plotly)     # Interactive plots
 library(htmlwidgets)# Save interactive plots
 # Set root directory one level up from current directory
@@ -61,10 +60,6 @@ source("functions/gbd_process.R")
 # Avoid scientific notation
 options("scipen"=100, "digits"=4)
 
-knitr::opts_chunk$set(
-  echo = FALSE,          # Hide code by default
-  message = FALSE,       # Suppress messages
-  warning = FALSE)        # Suppress warnings
 ```
 
 # All-Cause Mortality
@@ -82,9 +77,11 @@ knitr::opts_chunk$set(
 
     [lowersuperoutputareamidyearpopulationestimates](https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/lowersuperoutputareamidyearpopulationestimates)
 
-3.  Geographical Hierarchy (as of 2011)
+3.  Geographical Hierarchy (as of 2011) and table of correspondences to regions
 
     <https://geoportal.statistics.gov.uk/datasets/ons::lsoa-2011-to-travel-to-work-area-december-2011-exact-fit-lookup-in-the-uk/about>
+    
+    <https://www.ons.gov.uk/file?uri=/peoplepopulationandcommunity/populationandmigration/migrationwithintheuk/datasets/userinformationenglandandwaleslocalauthoritytoregionlookup/june2012/laregionlookup2012_tcm77-368555.xls> (downloaded 23-Oct-25) [SP NOTE: ONLY USED FOR LAD PLOT]
 
 4.  Life tables England (2017-2019)
 
@@ -96,10 +93,6 @@ knitr::opts_chunk$set(
 
     <https://opendatacommunities.org/resource?uri=http%3A%2F%2Fopendatacommunities.org%2Fdata%2Fsocietal-wellbeing%2Fimd2019%2Findices>
 
-6.  Adding Age-Standartised Mortality Rates from ONS as of February,
-    2025
-
-    <https://opendatacommunities.org/resource?uri=http%3A%2F%2Fopendatacommunities.org%2Fdata%2Fsocietal-wellbeing%2Fimd2019%2Findices>
 
 ```{r data-prep}
 
@@ -107,13 +100,16 @@ knitr::opts_chunk$set(
 # [Source]: https://www.ons.gov.uk/peoplepopulationandcommunity/birthsdeathsandmarriages/deaths/adhocs/1028deathregistrationsbysexfiveyearagegroupandlowerlayersuperoutputareaslsoa2011censusboundariesenglandandwales2001to2021
 
 # Import data from ONS
+tmpdir <- tempdir()
+deathsfile <- unzip(here("health_data/original/ons",  "DeathsbyLSOAmidyear11to21.zip"),
+                    exdir = tmpdir)[1]
 deaths_males <- read_xlsx(
-  here("manchester/health/original/ons", "DeathsbyLSOAmidyear11to21.xlsx"),
+  deathsfile,
   sheet = "2",
   skip = 2
 )
 deaths_females <- read_xlsx(
-  here("manchester/health/original/ons", "DeathsbyLSOAmidyear11to21.xlsx"),
+  deathsfile,
   sheet = "3",
   skip = 2
 )
@@ -151,7 +147,7 @@ deaths_england <- deaths %>%
     TRUE ~ age
   )) %>%
   group_by(lsoa_code, lsoa_name, age, gender) %>%
-  summarize(deaths = sum(deaths),.groups = "drop") %>%
+  dplyr::summarize(deaths = sum(deaths),.groups = "drop") %>%
   ungroup()
 
 rm(deaths)
@@ -160,13 +156,13 @@ rm(deaths)
 #[Source]: https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/lowersuperoutputareamidyearpopulationestimates
 
 pop_males <- read_xlsx(
-  here("manchester/health/original/ons", "SAPE21DT1a-mid-2018-on-2019-LA-lsoa-syoa-estimates-formatted.xlsx"),
+  here("health_data/original/ons", "SAPE21DT1a-mid-2018-on-2019-LA-lsoa-syoa-estimates-formatted.xlsx"),
   sheet = "Mid-2018 Males", 
   skip = 3
 )
 
 pop_females <- read_xlsx(
-  here("manchester/health/original/ons", "SAPE21DT1a-mid-2018-on-2019-LA-lsoa-syoa-estimates-formatted.xlsx"),
+  here("health_data/original/ons", "SAPE21DT1a-mid-2018-on-2019-LA-lsoa-syoa-estimates-formatted.xlsx"),
   sheet = "Mid-2018 Females", 
   skip = 3
 )
@@ -264,39 +260,29 @@ rm(pop_males, pop_females)
 # Geographical Hierarchy (as of 2011)
 # [Source]: https://geoportal.statistics.gov.uk/datasets/ons::lsoa-2011-to-travel-to-work-area-december-2011-exact-fit-lookup-in-the-uk/about
 
-msoa <- read.csv(here('manchester/health/original/ons/lsoa_2011.csv'))
+msoa <- read.csv(here('health_data/original/ons/lsoa_2011.csv'))
 
 msoa <- msoa %>%
   select(2:7) %>%
   distinct()
 # Columns: lsoa code, msoa code, lad code, lsoa name, msoa nmae, lad name
 
+# [Source]: https://www.ons.gov.uk/file?uri=/peoplepopulationandcommunity/populationandmigration/migrationwithintheuk/datasets/userinformationenglandandwaleslocalauthoritytoregionlookup/june2012/laregionlookup2012_tcm77-368555.xls
+regions <- read_xls(here('health_data/original/ons/laregionlookup2012_tcm77-368555.xls'), 
+                         sheet = 'LA_region_2012',
+                    skip = 3)  ## SP NOTE: Only used for LAD plot
+
 # Life Tables for England (2017-2019)
 # [Source]: https://www.ons.gov.uk/peoplepopulationandcommunity/birthsdeathsandmarriages/lifeexpectancies/datasets/nationallifetablesenglandreferencetables/current
-lifetable_england  <- read.csv(here('manchester/health/original/ons/life_tables_20172019.csv'),skip = 5)
+lifetable_england  <- read.csv(here('health_data/original/ons/life_tables_20172019.csv'),skip = 5)
 
 # English Indices of Deprivation by LSOA (2019)
 # [Source]: https://opendatacommunities.org/resource?uri=http%3A%2F%2Fopendatacommunities.org%2Fdata%2Fsocietal-wellbeing%2Fimd2019%2Findices
-deprivation <- read_csv(here('manchester/health/original/ons/imd2019lsoa.csv')) 
+deprivation <- read_csv(here('health_data/original/ons/imd2019lsoa.csv')) 
 
 # European Standard Population 2013
 # [Source]: https://publichealthscotland.scot/services/national-data-catalogue/national-datasets/search-the-datasets/european-standard-population/#:~:text=The%20European%20Standard%20Population%20(ESP,was%20originally%20introduced%20in%201976.
-european_pop <- read.csv(here('manchester/health/original/ons/european_standard_population_by_sex.csv'))
-
-# Adding Age-Standartised Mortality Rates from ONS as of February, 2025 
-
-nomis_lad <- read_xlsx(
-here("manchester/health/original/ons/nomis_2025_02_21_lads_regions.xlsx"), 
-     skip = 40, 
-     n_max = 70) %>% 
-  slice(c(1, 68)) %>% 
-  select(-c(1, 12)) %>% 
-  rename_with(~ str_remove(., "^lacu:")) %>% 
-  mutate(gender = c("Males", "Females")) %>%
-  pivot_longer(-gender, names_to = "lad_name", values_to = "stdrate_ons") %>%  
-  mutate(stdrate_ons = as.numeric(stdrate_ons)/100)
-
-
+european_pop <- read.csv(here('health_data/original/ons/european_standard_population_by_sex.csv'))
 
 ```
 
@@ -507,7 +493,7 @@ deaths_lad_eng  <- deaths_lad_eng  %>%
   filter(!(population == 0 & deaths > 0)) %>% 
   mutate(age_specific_rate = if_else(population == 0, 0, (deaths/ population*1000)))
 
-# Age-standardized Rate
+# Age-standardized Rate and relative risks by LAD
 deaths_lad_eng_asdr  <- deaths_lad_eng  %>%
   left_join(population_weights_England) %>% 
 #  filter(population != 0) %>%
@@ -516,11 +502,18 @@ deaths_lad_eng_asdr  <- deaths_lad_eng  %>%
     pop = sum(population),                       
     deaths = sum(deaths),
     stdrate = sum(age_specific_rate*weight)) %>%
-  ungroup() 
+  ungroup() %>%
+  group_by(gender) %>%
+  mutate(
+    product = stdrate * pop,
+    stdrate_ave = sum(product, na.rm = TRUE) / sum(pop, na.rm = TRUE),  
+    RR_lad = stdrate / stdrate_ave) %>%
+  ungroup()  %>%
+  dplyr::select(-product, -stdrate_ave)
 
 ```
 
-## Calculate relative risks by lad and sex for all cause mortality
+## Calculate relative risks by lsoa and sex for all cause mortality
 
 ```{r}
 
@@ -551,22 +544,6 @@ england_lsoa_deaths <- deaths_lsoa_eng_asdr %>%
   ) %>%
   ungroup()
 
-
-## Manchester 
-
-deaths_lad_eng_asdr_manchester <- deaths_lad_eng_asdr %>% 
-   filter(
-    str_starts(lad_name, "Bolton") |
-      str_starts(lad_name, "Bury") |
-      str_starts(lad_name, "Manchester") |
-      str_starts(lad_name, "Oldham") |
-      str_starts(lad_name, "Rochdale") |
-      str_starts(lad_name, "Salford") |
-      str_starts(lad_name, "Stockport") |
-      str_starts(lad_name, "Tameside") |
-      str_starts(lad_name, "Trafford") |
-      str_starts(lad_name, "Wigan"))
-
 ```
 
 ## Adding Index of Multiple Deprivation (IMD)
@@ -583,7 +560,6 @@ deprivation <- deprivation %>%
   mutate(deprivation="IMD") %>%
   rename(lsoa_code=FeatureCode) %>%
   select(lsoa_code, imd_decile=Value, deprivation)
-
 
 ```
 
@@ -607,7 +583,7 @@ mortality_socio_all <- england_deaths_socio %>%
   )  %>%
   ungroup()
 
-## Sex specific ASR
+## Sex specific ASR and relative risks
 
 mortality_socio_gender <- england_deaths_socio %>%
   group_by(imd_decile, gender) %>%
@@ -615,11 +591,18 @@ mortality_socio_gender <- england_deaths_socio %>%
     # Only calculate the weighted mean if both rate_area_100000 and population are available
     pop = sum(population_lsoa),
     deaths = sum(deaths_lsoa),
-    asr = mean(stdrate),
+    stdrate = mean(stdrate),  # SP NOTE - I changed this from 'asr' to 'stdrate'
     .groups = "drop"
   )  %>%
   ungroup() %>%
-  arrange(gender)
+  arrange(gender) %>%
+  group_by(gender) %>%
+  mutate(
+    product = stdrate * pop,
+    stdrate_ave = sum(product, na.rm = TRUE) / sum(pop, na.rm = TRUE),  
+    RR_imd = stdrate / stdrate_ave) %>%
+  ungroup() %>%
+  dplyr::select(-product, -stdrate_ave)
   
 ```
 
@@ -649,30 +632,35 @@ england_lifetable_lsoa <- england_deaths_socio %>%
   mutate(rate1000=rate1000*RR) %>%
   select(lsoa_code, lsoa_name, sex = sex.x, age, rate1000, imd_decile, population_lsoa,RR)
 
-# Filter for Greater Manchester Only:
+# Lifetable by LAD
 
-manchester_lifetable_lsoa <- england_lifetable_lsoa %>% 
-  filter(
-    str_starts(lsoa_name, "Bolton") |
-      str_starts(lsoa_name, "Bury") |
-      str_starts(lsoa_name, "Manchester") |
-      str_starts(lsoa_name, "Oldham") |
-      str_starts(lsoa_name, "Rochdale") |
-      str_starts(lsoa_name, "Salford") |
-      str_starts(lsoa_name, "Stockport") |
-      str_starts(lsoa_name, "Tameside") |
-      str_starts(lsoa_name, "Trafford") |
-      str_starts(lsoa_name, "Wigan")) %>%
-  mutate(rate=rate1000/1000)
+england_lifetable_lad <- deaths_lad_eng_asdr %>% 
+  rename(sex = gender, population_lad = pop) %>% 
+  cross_join(england_lifetable) %>% 
+  filter(sex.x == sex.y) %>%
+  mutate(rate1000 = rate1000*RR_lad) %>%
+  select(lad_code, lad_name, sex = sex.x, age, rate1000, population_lad, RR_lad)
 
-write.csv(manchester_lifetable_lsoa, here("manchester/health/processed/manchester_mortality_lsoa.csv"))
+# Lifetable by IMD
 
+england_lifetable_imd <- mortality_socio_gender %>% 
+  rename(sex = gender, population_imd = pop) %>% 
+  cross_join(england_lifetable) %>% 
+  filter(sex.x == sex.y) %>%
+  mutate(rate1000 = rate1000*RR_imd) %>%
+  select(imd_decile, sex = sex.x, age, rate1000, population_imd, RR_imd)
+
+# Save required files
+write.csv(england_lifetable_lad, here("health_data/processed/england_lifetable_lad.csv"), 
+          row.names = F)
+write.csv(england_lifetable_imd, here("health_data/processed/england_lifetable_imd.csv"), 
+          row.names = F)
 
 ```
 
 ## Graphs for checking results
 
-### Deaths rates for England by IMD
+### Deaths rates for England by LSOA and IMD
 
 ```{r}
 # Graph death rates england
@@ -681,10 +669,7 @@ write.csv(manchester_lifetable_lsoa, here("manchester/health/processed/mancheste
 # imd_decile is a factor
 
 data_plot <- england_lifetable_lsoa %>%
-  mutate(
-    imd_decile = as.factor(imd_decile),  # Ensure imd_decile is a factor
-    rate1000 = log(ifelse(rate1000 == 0, 0.00000000001, rate1000)))  # Replace zeros in rate1000
- 
+  mutate(imd_decile = as.factor(imd_decile))  # Ensure imd_decile is a factor
 
 p_england <- ggplot(data_plot, 
                     aes(x = age, y = rate1000,
@@ -694,7 +679,7 @@ p_england <- ggplot(data_plot,
   facet_wrap(~ sex) +  # Compare IMD deciles within each sex
   ylab("Mortality rate (per 1000)") + 
   xlab("Age (years)") +  
-  scale_y_continuous(breaks=c(0.0002, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.2)*1000) +
+  scale_y_continuous(trans = "log", breaks = c(0.2, 0.5, 1, 5, 10, 50, 100, 200)) +
   scale_color_viridis_d(option = "C", name = "IMD Decile") +  # Use discrete color scale
   theme_minimal(base_size = 14) +  
   theme(
@@ -706,88 +691,111 @@ p_england <- ggplot(data_plot,
 # Print the plot
 print(p_england)
 
-interactive_p_england <- ggplotly(p_england)
+# interactive_p_england <- ggplotly(p_england)  ## SP: SLOW AND CRASHES
 ```
 
-### Deaths rates for Greater Manchester by IMD
+### Deaths rates for England by LAD
 
 ```{r}
-# Graph death rates Manchester
+# Graph death rates england by LAD
 
-data_plot <- manchester_lifetable_lsoa %>%
-  mutate(
-    imd_decile = as.factor(imd_decile),  # Ensure imd_decile is a factor
-    rate1000 = log(ifelse(rate1000 == 0, 0.00000000001, rate1000))  # Replace zeros in rate1000
-  )
+data_plot <- england_lifetable_lad %>%
+  left_join(regions %>% dplyr::select(la_name, region_name), by = c("lad_name" = "la_name")) %>%
+  mutate(region_name = as.factor(region_name)) 
 
-p_manchester <- ggplot(data_plot, 
+p_england_lad <- ggplot(data_plot, 
                     aes(x = age, y = rate1000,
-                        col = imd_decile,  # Color by IMD decile
-                        group = lsoa_code)) +  # Each LSOA has its own line
+                        col = region_name,  # Color by region
+                        group = lad_code)) +  # Each LAD has its own line
+  geom_line(lwd = 0.7, alpha = 0.3) +  # Reduce opacity to manage overplotting
+  facet_wrap(~ sex) +  # Compare IMD deciles within each sex
+  ylab("Mortality rate (per 1000)") + 
+  xlab("Age (years)") +  
+  scale_y_continuous(trans = "log", breaks = c(0.2, 0.5, 1, 5, 10, 50, 100, 200)) +
+  labs(colour = "Region") +
+  guides(colour = guide_legend(nrow = 3, byrow = TRUE)) +
+  theme_minimal(base_size = 14) +  
+  theme(
+    strip.text = element_text(face = "bold"),
+    legend.position = "bottom"  # Move legend for readability
+  ) +
+  ggtitle("Death rates England by LAD")  # Add title
+
+# Print the plot
+print(p_england_lad)
+
+```
+```{r}
+# Graph death rates england by LAD, excluding London
+
+data_plot <- england_lifetable_lad %>%
+  left_join(regions %>% dplyr::select(la_name, region_name), by = c("lad_name" = "la_name")) %>%
+  mutate(region_name = as.factor(region_name)) %>%
+  filter(region_name != "London")
+
+p_england_ex_london_lad <- ggplot(data_plot, 
+                    aes(x = age, y = rate1000,
+                        col = region_name,  # Color by region
+                        group = lad_code)) +  # Each LAD has its own line
+  geom_line(lwd = 0.7, alpha = 0.3) +  # Reduce opacity to manage overplotting
+  facet_wrap(~ sex) +  # Compare IMD deciles within each sex
+  ylab("Mortality rate (per 1000)") + 
+  xlab("Age (years)") +  
+  scale_y_continuous(trans = "log", breaks = c(0.2, 0.5, 1, 5, 10, 50, 100, 200)) +
+  labs(colour = "Region") +
+  guides(colour = guide_legend(nrow = 3, byrow = TRUE)) +
+  theme_minimal(base_size = 14) +  
+  theme(
+    strip.text = element_text(face = "bold"),
+    legend.position = "bottom"  # Move legend for readability
+  ) +
+  ggtitle("Death rates England by LAD, excluding London")  # Add title
+
+# Print the plot
+print(p_england_ex_london_lad)
+
+```
+
+### Deaths rates for England by IMD
+
+```{r}
+# Graph death rates england by IMD
+
+data_plot <- england_lifetable_imd %>%
+  mutate(imd_decile = as.factor(imd_decile))  # Ensure imd_decile is a factor
+
+p_england_imd<- ggplot(data_plot, 
+                    aes(x = age, y = rate1000,
+                        col = imd_decile,  # Color by region
+                        group = imd_decile)) +  # Each IMD decile has its own line
   geom_line(lwd = 0.7, alpha = 0.5) +  # Reduce opacity to manage overplotting
   facet_wrap(~ sex) +  # Compare IMD deciles within each sex
   ylab("Mortality rate (per 1000)") + 
   xlab("Age (years)") +  
-    scale_y_continuous(breaks=c(0.0002, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.2)*1000) +
+  scale_y_continuous(trans = "log", breaks = c(0.2, 0.5, 1, 5, 10, 50, 100, 200)) +
   scale_color_viridis_d(option = "C", name = "IMD Decile") +  # Use discrete color scale
   theme_minimal(base_size = 14) +  
   theme(
     strip.text = element_text(face = "bold"),
     legend.position = "bottom"  # Move legend for readability
-  )  +
-  ggtitle("Death rates Greater Manchester")  # Add title
+  ) +
+  ggtitle("Death rates England by IMD decile")  # Add title
 
 # Print the plot
-print(p_manchester)
-
-# RR plots for Manchester
-
-manchester_deaths_socio <- england_deaths_socio %>% 
-  filter(
-    str_starts(lsoa_name, "Bolton") |
-      str_starts(lsoa_name, "Bury") |
-      str_starts(lsoa_name, "Manchester") |
-      str_starts(lsoa_name, "Oldham") |
-      str_starts(lsoa_name, "Rochdale") |
-      str_starts(lsoa_name, "Salford") |
-      str_starts(lsoa_name, "Stockport") |
-      str_starts(lsoa_name, "Tameside") |
-      str_starts(lsoa_name, "Trafford") |
-      str_starts(lsoa_name, "Wigan"))
-
-rr_plot <- ggplot(manchester_deaths_socio, aes(x = imd_decile, y = RR, color = as.factor(imd_decile))) +
-  geom_point(alpha = 0.7, size = 3) +  # Add points with transparency and size
-  geom_smooth(method = "lm", se = FALSE, aes(group = 1), color = "blue") +  # Add a linear regression line
-  scale_x_continuous(breaks = 1:10) +  # Set x-axis breaks for IMD deciles
-  labs(
-    title = "Relative Mortality Risk for LSOA by Deprivation Decile, Manchester (2016-2019)",
-    x = "Deprivation Decile (1 - Most Deprived, 10 - Least Deprived)",
-    y = "Relative Mortality Risk (RR)",
-    color = "Deprivation Decile"
-  ) +
-  theme_minimal() +
-  theme(
-    panel.grid.minor = element_blank(),
-    legend.position = "bottom"
-  ) +
-  theme(legend.title = element_text(face = "bold"), legend.text = element_text(size = 10))
-
-
-rr_plot
+print(p_england_imd)
 
 ```
 
-### Comparison with publicly available estimates by LADs and sex
 
-Comparison of age standardised rates with ONS data by LAD and our
-calculations but using weight from the European standard population. We
-use European standard population to compare because ASDR per LAD from
-ONS use this weights in their calculations.
+### Comparison with European standard population by LADs and sex
 
-stdr_rate ons is publised, stdr_rate_eng is calculated by us using
+Comparison of our calculations of age standardised rates with calculations using weight from the European standard population. We use European standard population to compare because ASDR per LAD from ONS use this weights in their calculations.
+
+In this comparison, stdr_rate_eng is calculated by us using
 England population weights and stdr_rate_eu is our estimates using
-European standard population weights. Our estimates using European
-standard rates compare with published ONS rates.
+European standard population weights. 
+
+*SP NOTE: I have omited the comparison with 2025 ONS age standardised rates (which was included in JIBE, but only for the Manchester area).*
 
 ```{r}
 
@@ -847,36 +855,8 @@ deaths_lad_eng_eu  <- deaths_lad_eng  %>%
     stdrate = sum(age_specific_rate*weight,  na.rm = TRUE)) %>%
   ungroup()
 
-#Filter for Manchester only
-deaths_lad_eu_asdr_manchester <- deaths_lad_eng_eu %>% 
-  filter(
-    str_starts(lad_name, "Bolton") |
-      str_starts(lad_name, "Bury") |
-      str_starts(lad_name, "Manchester") |
-      str_starts(lad_name, "Oldham") |
-      str_starts(lad_name, "Rochdale") |
-      str_starts(lad_name, "Salford") |
-      str_starts(lad_name, "Stockport") |
-      str_starts(lad_name, "Tameside") |
-      str_starts(lad_name, "Trafford") |
-      str_starts(lad_name, "Wigan"))
 
-# Creating Comparison Table between ONS and Our Estimates using English Population and European Standard Population
-
-comparison_table <- nomis_lad %>% 
-  left_join(deaths_lad_eng_asdr_manchester %>% 
-              select(lad_name, gender, stdrate_eng = stdrate), by = c("gender", "lad_name")) %>% 
-  left_join(deaths_lad_eu_asdr_manchester %>% 
-              select(lad_name, gender, stdrate_eu = stdrate), by = c("gender", "lad_name"))
-
-print(comparison_table)
-
-```
-
-## Additional comparisons (Marina to add some explanation)
-
-```{r}
-# Additional 
+# Add MSOA and LAD, and use best rate for small death numbers
 
 england_lsoa_deaths_eu <- deaths_lsoa_eng_eu |>
   left_join(msoa, join_by(lsoa_code == LSOA11CD)) |>
@@ -922,40 +902,34 @@ mortality_socio_gender_eu <- england_deaths_socio_eu %>%
   )  %>%
   ungroup()
 
-# lad of Greater Manchester Only
+# compare rates by LAD
+deaths_lad_compare <- deaths_lad_eng_asdr %>%
+  dplyr::select(lad_code, lad_name, gender, stdr_rate_eng = stdrate) %>%
+  left_join(deaths_lad_eng_eu %>% rename(stdr_rate_eu = stdrate),
+            by = c("lad_code", "lad_name", "gender")) %>%
+  mutate(abs_diff = abs(stdr_rate_eng - stdr_rate_eu))
 
-deaths_lad_man_eu <- deaths_lad_eng_eu %>%
-  filter(
-    str_starts(lad_name, "Bolton") |
-      str_starts(lad_name, "Bury") |
-      str_starts(lad_name, "Manchester") |
-      str_starts(lad_name, "Oldham") |
-      str_starts(lad_name, "Rochdale") |
-      str_starts(lad_name, "Salford") |
-      str_starts(lad_name, "Stockport") |
-      str_starts(lad_name, "Tameside") |
-      str_starts(lad_name, "Trafford") |
-      str_starts(lad_name, "Wigan"))
+print(deaths_lad_compare)
+  
+# graph of differences
+p_deaths_lad_compare <- ggplot(deaths_lad_compare, 
+                               aes(x = abs_diff)) +
+  geom_histogram(bins = 30, fill = "steelblue", 
+                 colour = "white", alpha = 0.8) +
+  facet_wrap(~ gender) +
+  labs(
+    title = "Comparison with European standard population by LAD",
+    subtitle = "Distribution of Absolute Differences in age-standardised rates",
+    x = "Absolute Difference (abs_diff)",
+    y = "Count"
+  ) +
+  theme_minimal(base_size = 14)
 
-print(deaths_lad_man_eu)
+print(p_deaths_lad_compare)
 
-deaths_lad_man_eng <- deaths_lad_eng_asdr %>%
-  filter(
-    str_starts(lad_name, "Bolton") |
-      str_starts(lad_name, "Bury") |
-      str_starts(lad_name, "Manchester") |
-      str_starts(lad_name, "Oldham") |
-      str_starts(lad_name, "Rochdale") |
-      str_starts(lad_name, "Salford") |
-      str_starts(lad_name, "Stockport") |
-      str_starts(lad_name, "Tameside") |
-      str_starts(lad_name, "Trafford") |
-      str_starts(lad_name, "Wigan"))
-
-print(deaths_lad_man_eng)
 ```
 
-# Disease Incidence
+# Disease Incidence - BELOW HERE NOT ADDRESSED YET
 
 For a list of diseases related to the modeled health risk factors
 including physical activity, air pollution (PM25 and NO2), noise and
