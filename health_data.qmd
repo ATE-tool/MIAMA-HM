@@ -50,6 +50,7 @@ library(here)       # File path management
 library(plotly)     # Interactive plots
 library(htmlwidgets)# Save interactive plots
 library(esquisse)   # Interactive ggplot2 figures [not used?]
+library(mgcv)       # Smoothing
 # Set root directory one level up from current directory
 knitr::opts_knit$set(root.dir = dirname(getwd()))
 
@@ -68,15 +69,11 @@ options("scipen"=100, "digits"=4)
 ## Data Sources
 
 1.  Mortality by LSOA by age and sex for year 2018 from ONS.
-    [https://www.ons.gov.uk/peoplepopulationandcommunity/birthsdeathsandmarriages/deaths/adhocs/](https://www.ons.gov.uk/peoplepopulationandcommunity/birthsdeathsandmarriages/deaths/adhocs/1028deathregistrationsbysexfiveyearagegroupandlowerlayersuperoutputareaslsoa2011censusboundariesenglandandwales2001to2021)
-
-    [1028deathregistrationsbysexfiveyearagegroupandlowerlayersuperoutputareaslsoa2011censusboundariesenglandandwales2001to2021](https://www.ons.gov.uk/peoplepopulationandcommunity/birthsdeathsandmarriages/deaths/adhocs/1028deathregistrationsbysexfiveyearagegroupandlowerlayersuperoutputareaslsoa2011censusboundariesenglandandwales2001to2021)
+    <https://www.ons.gov.uk/peoplepopulationandcommunity/birthsdeathsandmarriages/deaths/adhocs/1028deathregistrationsbysexfiveyearagegroupandlowerlayersuperoutputareaslsoa2011censusboundariesenglandandwales2001to2021>
 
 2.  Population Data by LSOA by age and sex for 2018 mid year from ONS.
 
-    [https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/](https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/lowersuperoutputareamidyearpopulationestimates)
-
-    [lowersuperoutputareamidyearpopulationestimates](https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/lowersuperoutputareamidyearpopulationestimates)
+    <https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/lowersuperoutputareamidyearpopulationestimates>
 
 3.  Geographical Hierarchy (as of 2011) and table of correspondences to regions
 
@@ -86,18 +83,27 @@ options("scipen"=100, "digits"=4)
     
 4.  Life tables England (2017-2019)
 
-    [https://www.ons.gov.uk/peoplepopulationandcommunity/birthsdeathsandmarriages/lifeexpectancies/](https://www.ons.gov.uk/peoplepopulationandcommunity/birthsdeathsandmarriages/lifeexpectancies/datasets/nationallifetablesenglandreferencetables/current)
-
-    [datasets/nationallifetablesenglandreferencetables/current](https://www.ons.gov.uk/peoplepopulationandcommunity/birthsdeathsandmarriages/lifeexpectancies/datasets/nationallifetablesenglandreferencetables/current)
+    <https://www.ons.gov.uk/peoplepopulationandcommunity/birthsdeathsandmarriages/lifeexpectancies/datasets/nationallifetablesenglandreferencetables/current>
 
 5.  Level of multiple deprivation
 
     <https://opendatacommunities.org/resource?uri=http%3A%2F%2Fopendatacommunities.org%2Fdata%2Fsocietal-wellbeing%2Fimd2019%2Findices>
 
-
 6.  European standard population
 
-    <https://publichealthscotland.scot/services/national-data-catalogue/national-datasets/search-the-datasets/european-standard-population/<
+    <https://publichealthscotland.scot/services/national-data-catalogue/national-datasets/search-the-datasets/european-standard-population/>
+    
+7.  Age-standardised mortality rates from ONS for 2018, downloaded 8-Nov-25
+
+    <https://www.nomisweb.co.uk/datasets/mortsa>
+    Details selected for download: 
+    - Geography: 'local authorities: district / unitary (as of April 2023)
+    - Date: 2018
+    - Age: All
+    - Rates: Age-standardised mortality rate
+    - Sex: All
+    - Underlying Cause > Full ICD_10 Classification: Total
+
 
 ```{r data-prep}
 
@@ -241,6 +247,16 @@ deprivation <- read_csv(here('health_data/original/ons/imd2019lsoa.csv'))
 # Source: https://publichealthscotland.scot/services/national-data-catalogue/national-datasets/search-the-datasets/european-standard-population/
 european_pop <- read.csv(here('health_data/original/ons/european_standard_population_by_sex.csv'))
 
+# Age-standardised mortality rates for 2018, downloaded 8-Nov-25 (ONS/NOMIS)
+# Source: https://www.nomisweb.co.uk/datasets/mortsa 
+nomis_lad <- read_xlsx(here("health_data/original/ons/nomis_2025_11_07_221958.xlsx"), 
+                       skip = 337) %>%
+  slice(c(3:320, 334:651)) %>%  # rows for males/females
+  dplyr::select(lad_name = measure, asmn = `Age-standardised mortality rate`) %>%
+  mutate(gender = ifelse(row_number() < 319, "Males", "Females"),
+         stdrate_ons = as.numeric(asmn) / 100) %>%
+  dplyr::select(gender, lad_name, stdrate_ons)
+
 ```
 
 ## Mortality rates by year of age and sex for England
@@ -307,9 +323,35 @@ population_weights_England <- population_england_total %>%
   mutate(weight = age_population / gender_population) %>%
   select(gender, age, weight)
 
+# European Standard Population (2013) -> weights table 
+european_pop_2 <- european_pop %>%
+  mutate(Sex = ifelse(Sex == "Male", "Males", "Females")) %>%
+  rename(
+    age       = AgeGroup,
+    gender    = Sex,
+    population = EuropeanStandardPopulation
+  ) %>%
+  mutate(
+    age = case_when(
+      age %in% c("90plus years","85-89 years") ~ "over 85",
+      TRUE ~ str_replace(age, "(\\d+)-(\\d+)", "\\1 to \\2")
+    ),
+    age = str_replace_all(age, "\\b(\\d)\\b", "0\\1"),
+    age = str_replace(age, " years", ""),
+    age = if_else(age == "00 to 04", "01 to 04", age)
+  ) %>%
+  group_by(age, gender) %>%
+  summarise(population = sum(population), .groups = "drop")
+
+population_weights_europe <- european_pop_2 %>%
+  group_by(gender, age) %>%
+  summarise(age_population = sum(population), .groups = "drop") %>%
+  mutate(weight = age_population / 100000) %>%
+  select(age, gender, weight)
+
 ```
 
-## Relative Risk by LSOA
+## Relative Risk
 
 A relative mortality rate is produced for each area (lsoa), defined as
 the age-standardised mortality rate by sex for each lsoa relative to the
@@ -341,8 +383,9 @@ ASDRs.
 
 ```{r}
 
+# note function uses eur rates; can replace with eng rates when calling, to compare
 compute_asdr <- function(df_deaths, df_pop, by_keys,
-                         weights = population_weights_England) {
+                         weights = population_weights_europe) { 
   deaths_clean <- df_deaths %>%
     select(all_of(by_keys), deaths) %>%
     group_by(across(all_of(by_keys))) %>%
@@ -420,91 +463,82 @@ deaths_lad_eng_asdr <- compute_asdr(
 ```
 
 
-## By IMD
+## Deprivation data
 
 ```{r}
-deprivation <- deprivation %>%
+
+# Tidy IMD at LSOA11 level
+deprivation_lsoa11 <- deprivation %>%
   filter(`Indices of Deprivation` == "a. Index of Multiple Deprivation (IMD)",
          Measurement == "Decile") %>%
   mutate(deprivation = "IMD") %>%
-  rename(lsoa_code = FeatureCode) %>%
-  select(lsoa_code, imd_decile = Value, deprivation)
+  rename(lsoa11_code = FeatureCode) %>%
+  transmute(
+    lsoa11_code,
+    imd_decile = as.integer(Value),  # ensure numeric 1..10
+    deprivation
+  )
 
-england_lsoa_deaths <- deaths_lsoa_eng_asdr %>%
-  left_join(msoa %>% select(LSOA11CD, MSOA11CD, LAD11CD), by = c("lsoa_code" = "LSOA11CD")) %>%
-  rename(msoa_code = MSOA11CD, lad_code = LAD11CD) %>%
-  select(lsoa_code, lsoa_name, msoa_code, lad_code, gender,
-         population_lsoa, deaths_lsoa, stdrate) %>%
-  distinct() %>%
-  left_join(deaths_msoa_eng_asdr %>%
-              select(msoa_code, gender, stdrate_msoa = stdrate, deaths_msoa),
-            by = c("msoa_code","gender")) %>%
-  left_join(deaths_lad_eng_asdr %>%
-              select(lad_code, gender, stdrate_lad = stdrate, deaths_lad),
-            by = c("lad_code","gender")) %>%
-  group_by(gender) %>%
-  mutate(
-    stdrate_selected = case_when(
-      deaths_lsoa < 5 ~ if_else(deaths_msoa < 10, stdrate_lad, stdrate_msoa), ##10 and 20 before this improves, still shoud be the same with calibration
-      TRUE ~ stdrate
-    ),
-    product     = stdrate_selected * population_lsoa,
-    stdrate_ave = sum(product, na.rm = TRUE) / sum(population_lsoa, na.rm = TRUE),
-    RR          = stdrate_selected / stdrate_ave
-  ) %>% ungroup()
-
-deaths_imd <- deaths_england %>%
-  left_join(msoa, by = c("lsoa_code" = "LSOA11CD")) %>%
-  left_join(deprivation, by = "lsoa_code") %>%
-  group_by(imd_decile, gender, age) %>%
-  summarise(deaths = sum(deaths, na.rm = TRUE), .groups = "drop")
-
-population_imd <- population_england %>%
-  left_join(msoa, by = c("lsoa_code" = "LSOA11CD")) %>%
-  left_join(deprivation, by = "lsoa_code") %>%
-  group_by(imd_decile, gender, age) %>%
-  summarise(population = sum(population, na.rm = TRUE), .groups = "drop")
-
-deaths_imd_eng <- deaths_imd %>%
-  left_join(population_imd, by = c("imd_decile","gender","age")) %>%
-  mutate(age_specific_rate = case_when(
-    population > 0 ~ (deaths / population * 1000),
-    population == 0 & deaths == 0 ~ 0,
-    population == 0 & deaths  > 0 ~ NA_real_
-  ))
-
-deaths_imd_eng_asdr <- deaths_imd_eng %>%
-  left_join(population_weights_England, by = c("age","gender")) %>%
-  group_by(imd_decile, gender) %>%
+# Map IMD (LSOA11) → LSOA21
+#    - For splits: each new LSOA21 inherits the source LSOA11 decile.
+#    - For merges (several LSOA11 into one LSOA21): take the most deprived (min decile).
+deprivation_lsoa21 <- oa21_lookup %>%
+  left_join(deprivation_lsoa11, by = c("LSOA11CD" = "lsoa11_code")) %>%
+  group_by(LSOA21CD, LAD22CD, LAD22NM) %>%
   summarise(
-    pop     = sum(population, na.rm = TRUE),
-    deaths  = sum(deaths, na.rm = TRUE),
-    stdrate = sum(replace_na(age_specific_rate, 0) * weight, na.rm = TRUE),
+    imd_decile = if (all(is.na(imd_decile))) NA_integer_ else min(imd_decile, na.rm = TRUE),
+    deprivation = "IMD",
     .groups = "drop"
   ) %>%
-  group_by(gender) %>%
-  mutate(
-    product = stdrate * pop,
-    stdrate_ave = sum(product, na.rm = TRUE) / sum(pop, na.rm = TRUE),
-    RR_imd = stdrate / stdrate_ave
-  ) %>% ungroup()
+  rename(
+    lsoa21_code = LSOA21CD,
+    lad22_code  = LAD22CD,
+    lad22_name  = LAD22NM
+  )
 
-england_lsoa_deaths <- england_lsoa_deaths %>%
-  left_join(deprivation, by = "lsoa_code") %>%
-  left_join(deaths_imd_eng_asdr %>% select(imd_decile, gender, RR_imd),
-            by = c("imd_decile","gender"))
+
+## Calculate relative risks by lad and sex for all cause mortality
+
+england_lsoa_deaths <- deaths_lsoa_eng_asdr %>% 
+  left_join(msoa, by = c("lsoa_code" = "LSOA11CD")) %>% 
+  select(lsoa_code, lsoa_name, msoa_code = "MSOA11CD", lad_code = "LAD11CD",
+         gender, population_lsoa, deaths_lsoa, stdrate) %>% 
+  distinct() %>% 
+  left_join(deaths_msoa_eng_asdr %>%  
+    select(msoa_code, stdrate_msoa = stdrate, deaths_msoa, gender),
+            by = c("msoa_code", "gender")) %>%
+  left_join(deaths_lad_eng_asdr %>% 
+    select(lad_code, stdrate_lad = stdrate, gender, deaths_lad),
+            by = c("lad_code", "gender")) %>% 
+  group_by(gender) %>% 
+  mutate(
+    # Adjust the logic to first check for deaths_lsoa and then deaths_msoa
+    stdrate_selected = ifelse(
+      deaths_lsoa <= 10 ,            # If LSOA deaths less than 10, use MSOA rate -
+      ifelse(deaths_msoa <= 20,     # If MSOA deaths are less than 20, use LAD rate
+             stdrate_lad,         
+             stdrate_msoa),
+      stdrate # Otherwise, use LSOA rate
+    ),
+    product = stdrate_selected * population_lsoa,  # Calculate product here
+    stdrate_ave = sum(product, na.rm = TRUE) / sum(population_lsoa, na.rm = TRUE),  
+    RR = stdrate_selected / stdrate_ave  # Calculate RR using the selected rate
+  ) %>%
+  ungroup()
+
 ```
 
-## Apply to life tables and calibrate
+## Apply to life tables, calibrate and smooth
 
 ```{r}
+# Apply LSOA relative risks to life table
 
 england_lifetable_lsoa <- england_lsoa_deaths %>% 
   rename(sex = gender) %>% 
   cross_join(england_lifetable) %>% 
   filter(sex.x == sex.y) %>%
   mutate(rate1000=rate1000*RR) %>%
-  select(lsoa_code, lsoa_name, gender = sex.x, age, rate1000, imd_decile, population_lsoa,RR)
+  select(lsoa_code, lsoa_name, gender = sex.x, age, rate1000, population_lsoa,RR)
 
 # Calibration by LAD22 × sex × age-band (NO weights),
 # using oa21_lookup (LSOA11 -> LSOA21 -> LAD22 bridge (no weights))
@@ -595,7 +629,8 @@ england_lsoa21_syoa_cal <- rates_lsoa21_syoa %>%
   dplyr::mutate(rate_cal = rate * factor) %>%
   dplyr::select(lsoa21cd, LAD22CD, LAD22NM, age, age_band, gender, rate, factor, rate_cal)
 
-# CALIBRATION CHECKS
+
+# Calibration checks
 lad_names <- oa21_lookup %>% dplyr::select(LAD22CD, LAD22NM) %>% dplyr::distinct()
 
 # Population LSOA21 (NO weighting)
@@ -646,20 +681,129 @@ check_england_total <- check_by_lad_gender_age %>%
 
 print(check_england_total)
 
+```
 
-# Save calibrated outputs with imd
+```{r}
+# Smooth, as calibration results in some jumps (need to check again after smoothing it matches observed) - takes about 50 minutes
 
-england_lsoa21_syoa_cal <- england_lsoa21_syoa_cal %>% 
-  left_join(deprivation, by= c("lsoa21cd" = "lsoa_code")) %>% 
-  select(lsoa21cd, age, sex= gender, rate = rate_cal, imd_decile, deprivation, LAD22NM) %>%
-  mutate(rate1000= rate*1000)
+england_lsoa21_syoa_smoothed <- england_lsoa21_syoa_cal %>%
+  rename(sex = gender) %>%
+  arrange(lsoa21cd, sex, age) %>%
+  group_by(lsoa21cd, sex) %>%
+  group_modify(~{
+    df  <- .x
+    eps <- 1e-9
 
+    # default: no change
+    df$rate_smooth <- df$rate
+
+    idx_ge5 <- df$age >= 20 & is.finite(df$rate) & is.finite(df$age)
+
+    if (sum(idx_ge5) >= 7) {
+      fit <- mgcv::gam(
+        log(pmax(rate, eps)) ~ s(age, k = 7),   # lower k -> smoother; higher k -> more detail
+        data   = df[idx_ge5, , drop = FALSE],
+        method = "REML",
+        select = TRUE
+      )
+
+      df$rate_smooth[idx_ge5] <- exp(predict(fit, newdata = df[idx_ge5, , drop = FALSE]))
+
+      # --- Rescale to preserve overall rate level over ages >= 5 (no population available) ---
+      # Keeps sum (and thus the mean) of rates for 5+ unchanged
+      sum_orig   <- sum(df$rate[idx_ge5], na.rm = TRUE)
+      sum_smooth <- sum(df$rate_smooth[idx_ge5], na.rm = TRUE)
+      sf <- if (is.finite(sum_smooth) && sum_smooth > 0) sum_orig / sum_smooth else 1
+
+      df$rate_smooth[idx_ge5] <- df$rate_smooth[idx_ge5] * sf
+    }
+
+    df$rate1000 <- df$rate_smooth * 1000
+    df
+  }) %>%
+  ungroup()
+
+# join IMD
+england_lsoa21_syoa_smoothed <- england_lsoa21_syoa_smoothed %>%
+  left_join(deprivation_lsoa21 %>% 
+              dplyr::select(lsoa21cd = lsoa21_code, imd_decile), 
+            by= "lsoa21cd")
+
+# Smoothing checks (repeat calibration checks above for smoothed data)
+
+rates_sm <- england_lsoa21_syoa_smoothed %>%
+  dplyr::mutate(
+    gender = sex,
+    age    = as.integer(age)
+  ) %>%
+  # choose best available rate column (per person)
+  dplyr::mutate(
+    rate_use = dplyr::case_when(
+      !is.null(.data$rate_smooth) ~ .data$rate_smooth,
+      is.null(.data$rate_smooth) & !is.null(.data$rate) ~ .data$rate,
+      is.null(.data$rate_smooth) & is.null(.data$rate) & !is.null(.data$rate1000) ~ (.data$rate1000 / 1000),
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  dplyr::select(lsoa21cd, gender, age, rate_use)
+
+# Expected deaths by LAD × gender × age-band (using smoothed rate) 
+exp_by_lad_gender_ageband_sm <- pop21_syoa %>%
+  dplyr::mutate(age_band = as.character(age_to_band(age))) %>%
+  dplyr::left_join(
+    rates_sm %>% dplyr::mutate(age_band = as.character(age_to_band(age))),
+    by = c("lsoa21cd","gender","age","age_band")
+  ) %>%
+  dplyr::mutate(exp_deaths_sm = population * dplyr::coalesce(rate_use, 0)) %>%
+  dplyr::group_by(LAD22CD, gender, age_band) %>%
+  dplyr::summarise(assigned_sm = sum(exp_deaths_sm, na.rm = TRUE), .groups = "drop")
+
+#  Compare to observed by LAD × gender × age-band
+check_by_lad_gender_age_sm <- obs_by_lad_age %>%
+  dplyr::left_join(exp_by_lad_gender_ageband_sm, by = c("LAD22CD","gender","age_band")) %>%
+  dplyr::mutate(
+    assigned_sm = dplyr::coalesce(assigned_sm, 0),
+    diff        = assigned_sm - observed,
+    pct_diff    = dplyr::if_else(observed > 0, 100 * diff / observed, NA_real_)
+  )
+
+#  England total
+check_england_total_sm <- check_by_lad_gender_age_sm %>%
+  dplyr::summarise(
+    observed   = sum(observed,   na.rm = TRUE),
+    assigned   = sum(assigned_sm, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    area    = "England (all LAD22)",
+    diff    = assigned - observed,
+    pct_diff = ifelse(observed > 0, 100 * diff / observed, NA_real_)
+  ) %>%
+  dplyr::select(area, observed, assigned, diff, pct_diff)
+
+print(check_england_total_sm)
+
+# Check per-age-band summary, England-wide
+check_england_by_ageband_sm <- check_by_lad_gender_age_sm %>%
+  dplyr::group_by(age_band) %>%
+  dplyr::summarise(
+    observed = sum(observed, na.rm = TRUE),
+    assigned = sum(assigned_sm, na.rm = TRUE),
+    diff     = assigned - observed,
+    pct_diff = ifelse(observed > 0, 100 * diff / observed, NA_real_),
+    .groups  = "drop"
+  )
+View(check_england_by_ageband_sm)
+
+
+# Save calibrated & smoothed output with imd
 readr::write_csv(
-  england_lsoa21_syoa_cal,
-  here::here("health_data/processed/england_lsoa21_mxrates_calibrated.csv")
+  england_lsoa21_syoa_smoothed,
+  here::here("health_data/processed/england_lsoa21_mxrates.csv")
 )
 
 ```
+
 
 ## Lifetables by LAD and IMD
 
@@ -672,10 +816,13 @@ readr::write_csv(
 ## - areas with NA for their deprivation
 
 # lifetable by LAD and IMD, based on calibrated results
-england_lifetable_lad_imd <- england_lsoa21_syoa_cal %>%
+england_lifetable_lad_imd <- england_lsoa21_syoa_smoothed %>%
+  dplyr::select(lsoa21cd, LAD22CD, LAD22NM, sex, age, rate1000, imd_decile) %>%
   
   # join population
-  left_join(pop21_syoa, by = c("lsoa21cd",  "sex" = "gender", "age")) %>%
+  left_join(pop21_syoa %>%
+              dplyr::select(lsoa21cd, sex = gender, age, population), 
+            by = c("lsoa21cd",  "sex", "age")) %>%
   
   # # remove NAs (which are ages > 90)
   # filter(!is.na(population)) %>%
@@ -685,10 +832,12 @@ england_lifetable_lad_imd <- england_lsoa21_syoa_cal %>%
   mutate(population = ifelse(age > 90 & is.na(population),
                              1, population)) %>%
   
+  # remove where zero population
+  filter(population > 0) %>%
+  
   # aggregate to LAD and IMD
   group_by(LAD22CD, LAD22NM, imd_decile, age, sex) %>%
   summarise(rate1000 = weighted.mean(rate1000, w = population),
-            rate = weighted.mean(rate, w = population),
             population = sum(population),
             .groups = "drop")
 
@@ -712,7 +861,7 @@ write.csv(
 ### Graph for England
 # imd_decile is a factor
 
-data_plot <- england_lsoa21_syoa_cal %>%
+data_plot <- england_lsoa21_syoa_smoothed %>%
   mutate(imd_decile = as.factor(imd_decile))  # Ensure imd_decile is a factor
 
 p_england <- ggplot(data_plot, 
@@ -770,148 +919,49 @@ print(p_lad_imd)
 
 ```
 
+### Comparison with publicly available estimates by LADs and sex
 
-### Comparison with European standard population by LADs and sex - TO BE REDONE
+Comparison of age standardised rates with ONS data by LAD and our
+calculations but using weight from the European standard population. We
+use European standard population to compare because ASDR per LAD from
+ONS use this weights in their calculations.
 
-Comparison of our calculations of age standardised rates with calculations using weight from the European standard population. We use European standard population to compare because ASDR per LAD from ONS use this weights in their calculations.
-
-In this comparison, stdr_rate_eng is calculated by us using
+stdr_rate ons is publised, stdr_rate_eng is calculated by us using
 England population weights and stdr_rate_eu is our estimates using
-European standard population weights. 
-
-*SP NOTE: I have omited the comparison with 2025 ONS age standardised rates (which was included in JIBE, but only for the Manchester area).*
+European standard population weights. Our estimates using European
+standard rates compare with published ONS rates.
 
 ```{r}
 
-### European Standard Population 2013
+# Comparison using English weights. Belen note (07/11/2025) after checking results using english weights and Euro weights, data aligns with published estimates with Euro weights, so using those, using english weights pushes all rates down. 
 
-european_pop_2 <- european_pop %>%
-  mutate(Sex = ifelse(Sex == "Male", "Males", "Females")) %>%
-  rename(
-    "age" = "AgeGroup",
-   "gender" = "Sex",
-    "population" = "EuropeanStandardPopulation"
-  ) %>%
-  mutate(age = case_when(
-    age == "90plus years" | age == "85-89 years" ~ "over 85",
-    TRUE ~ str_replace(age, "(\\d+)-(\\d+)", "\\1 to \\2")
-  )) %>%
-  mutate(age = str_replace_all(age, "\\b(\\d)\\b", "0\\1")) %>%
-  mutate(age = str_replace(age, " years", "")) %>%  # Remove 'years'
-  mutate(age = ifelse(age == "00 to 04", "01 to 04", age)) %>%  # Rename '00 to 04'
-  group_by(age, gender) %>%
-  summarise(population = sum(population), .groups = 'drop')
+# Calculate LAD ASR using english weights
 
+deaths_lad_asdr_compare <- compute_asdr(
+  df_deaths = deaths_lad %>% group_by(lad_code, lad_name, gender, age) %>%
+    summarise(deaths = sum(deaths, na.rm = TRUE), .groups = "drop"),
+  df_pop    = population_lad %>% group_by(lad_code, lad_name, gender, age) %>%
+    summarise(population = sum(population, na.rm = TRUE), .groups = "drop"),
+  by_keys   = c("lad_code","lad_name","gender","age"), weights = population_weights_England
+) %>% rename(deaths_lad = deaths_geo)
 
-# Calculate age-specific population and join with gender totals
-population_weights_europe <- european_pop_2 %>%
-  select(gender, age, population) %>%
-  group_by(gender, age) %>%
-  summarise(age_population = sum(population)) %>%  # Total population by gender and age
-  ungroup() %>%
-  mutate(weight=age_population/100000)
+deaths_lad_eng_weights <- deaths_lad_asdr_compare %>%
+  select(lad_name, gender, stdrate_eng = stdrate)
 
-## Calculate all ASDRs by areas with European population
+deaths_lad_eur_weights <- deaths_lad_eng_asdr %>% # now uses european weights
+    select(lad_name, gender, stdrate_eu = stdrate)
 
-# lsoa
-deaths_lsoa_eng_eu  <- deaths_lsoa_eng %>%
-  left_join(population_weights_europe, by = c("age", "gender")) %>%
-  group_by(lsoa_code, lsoa_name, gender) %>%
-  summarise(
-    stdrate = sum(age_specific_rate * weight, na.rm = TRUE),
-    population_lsoa = sum(population),
-    deaths_lsoa = sum(deaths))
+# Comparison with NOMIS (expects `nomis_lad` with lad_name & gender)
+comparison_table <- nomis_lad %>% 
+  filter(lad_name %in% deaths_lad_eng_weights$lad_name) %>%  # remove welsh
+  left_join(deaths_lad_eng_weights, by = c("gender","lad_name")) %>% 
+  left_join(deaths_lad_eur_weights,  by = c("gender","lad_name"))
 
-#msoa
-deaths_msoa_eng_eu  <- deaths_msoa_eng  %>%
-  left_join(population_weights_europe, by = c("age", "gender")) %>%
-  group_by(msoa_code, msoa_name, gender) %>%
-  summarise(
-    stdrate = sum(age_specific_rate * weight, na.rm = TRUE),
-    deaths_msoa = sum(deaths)) %>%
-  ungroup()
-
-#lad
-deaths_lad_eng_eu  <- deaths_lad_eng  %>%
-  left_join(population_weights_europe, by = c("age", "gender")) %>%
-  group_by(lad_code, lad_name, gender) %>%
-  summarise(
-    stdrate = sum(age_specific_rate*weight,  na.rm = TRUE)) %>%
-  ungroup()
-
-
-# Add MSOA and LAD, and use best rate for small death numbers
-
-england_lsoa_deaths_eu <- deaths_lsoa_eng_eu |>
-  left_join(msoa, join_by(lsoa_code == LSOA11CD)) |>
-  select(lsoa_code, lsoa_name, msoa_code = "MSOA11CD", lad_code = "LAD11CD",gender,population_lsoa, deaths_lsoa, stdrate) |>
-  distinct() |>
-  left_join(deaths_msoa_eng_eu |> select(msoa_code, stdrate_msoa = stdrate, deaths_msoa,gender), by= c("msoa_code","gender")) |>
-  left_join(deaths_lad_eng_eu |> select(lad_code, stdrate_lad = stdrate,gender), by=c("lad_code","gender")) %>%
-  group_by (gender) %>%
-  # Use MSOA rate if LSOA std rate is missing or has fewer than 10 deaths, and use LAD if msoa deaths are fewer than 20
-  mutate(stdrate_ave = with(.data, sum(stdrate*population_lsoa,na.rm = TRUE)/sum(population_lsoa)),
-         stdrate = ifelse(
-           is.na(stdrate) | deaths_lsoa < 10,   # if NA or fewer than 10 deaths at the lsoa level, use msoa
-           ifelse(
-             deaths_msoa > 20,             # if fewer than 20 deaths at the msoa level, use lad
-             stdrate_msoa,
-             stdrate_lad),
-           stdrate)) |>                    # if not NA and more than or equal to 10, use lsoa
-  mutate(RR = stdrate / stdrate_ave)
-
-# Adding level of deprivation
-
-england_deaths_socio_eu <- england_lsoa_deaths_eu %>%
-  left_join(deprivation, by = "lsoa_code")
-
-# For All
-mortality_socio_all_eu <- england_deaths_socio_eu %>%
-  group_by(imd_decile) %>%
-  summarise(
-    # Only calculate the weighted mean if both rate_area_100000 and population are available
-    ASR = sum(stdrate*population_lsoa, na.rm=TRUE)/sum(population_lsoa),
-    .groups = "drop"
-  )  %>%
-  ungroup()
-
-### Sex specific ASR
-
-mortality_socio_gender_eu <- england_deaths_socio_eu %>%
-  group_by(imd_decile, gender) %>%
-  summarise(
-    # Only calculate the weighted mean if both rate_area_100000 and population are available
-    ASR = sum(stdrate*population_lsoa, na.rm=TRUE)/sum(population_lsoa),
-    .groups = "drop"
-  )  %>%
-  ungroup()
-
-# compare rates by LAD
-deaths_lad_compare <- deaths_lad_eng_asdr %>%
-  dplyr::select(lad_code, lad_name, gender, stdr_rate_eng = stdrate) %>%
-  left_join(deaths_lad_eng_eu %>% rename(stdr_rate_eu = stdrate),
-            by = c("lad_code", "lad_name", "gender")) %>%
-  mutate(abs_diff = abs(stdr_rate_eng - stdr_rate_eu))
-
-print(deaths_lad_compare)
-  
-# graph of differences
-p_deaths_lad_compare <- ggplot(deaths_lad_compare, 
-                               aes(x = abs_diff)) +
-  geom_histogram(bins = 30, fill = "steelblue", 
-                 colour = "white", alpha = 0.8) +
-  facet_wrap(~ gender) +
-  labs(
-    title = "Comparison with European standard population by LAD",
-    subtitle = "Distribution of Absolute Differences in age-standardised rates",
-    x = "Absolute Difference (abs_diff)",
-    y = "Count"
-  ) +
-  theme_minimal(base_size = 14)
-
-print(p_deaths_lad_compare)
+print(comparison_table)
 
 ```
+
+
 
 # Disease Incidence - BELOW HERE NOT ADDRESSED YET
 
