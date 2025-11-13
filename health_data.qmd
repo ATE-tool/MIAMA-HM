@@ -1,6 +1,6 @@
 ---
 title: "Health Data"
-author: "Belen Zapata-Diomedi, Marina Berdikhaniva, Steve Pemberton"
+author: "Belen Zapata-Diomedi, Steve Pemberton"
 email: "mbzd2@cam.ac.uk, mb2592@cam.ac.uk, steve.pemberton@rmit.edu.au"
 date: today
 format: 
@@ -69,9 +69,10 @@ options("scipen"=100, "digits"=4)
 ## Data Sources
 
 1.  Mortality by LSOA by age and sex for year 2018 from ONS.
+
     <https://www.ons.gov.uk/peoplepopulationandcommunity/birthsdeathsandmarriages/deaths/adhocs/1028deathregistrationsbysexfiveyearagegroupandlowerlayersuperoutputareaslsoa2011censusboundariesenglandandwales2001to2021>
 
-2.  Population Data by LSOA by age and sex for 2018 mid year from ONS.
+2.  Population Data by LSOA by age and sex for 2018 mid year, and 2023 mid year (downloaded 12-Nov-25), from ONS.
 
     <https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/lowersuperoutputareamidyearpopulationestimates>
 
@@ -96,6 +97,7 @@ options("scipen"=100, "digits"=4)
 7.  Age-standardised mortality rates from ONS for 2018, downloaded 8-Nov-25
 
     <https://www.nomisweb.co.uk/datasets/mortsa>
+    
     Details selected for download: 
     - Geography: 'local authorities: district / unitary (as of April 2023)
     - Date: 2018
@@ -107,7 +109,7 @@ options("scipen"=100, "digits"=4)
 
 ```{r data-prep}
 
-# Functions
+# Functions for cleaning population
 clean_pop <- function(df) {
   df %>%
     filter(LSOA != "", !str_starts(`Area Codes`, "W")) %>%   # keep England only
@@ -218,6 +220,30 @@ rm(pop_males_raw, pop_females_raw,
    pop_males_clean, pop_females_clean,
    pop_males_5, pop_females_5, pop_males_syoa, pop_females_syoa)
 
+# Population (2023): single year
+# Source: ONS LSOA mid-year population estimates
+# https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/lowersuperoutputareamidyearpopulationestimates
+# note that age '90' in the table is actually 90+ 
+
+pop_england_syoa_2023 <- read_xlsx(
+  here("health_data/original/ons", "sapelsoasyoa20222024.xlsx"),
+  sheet = "Mid-2023 LSOA 2021", skip = 3
+) %>%
+  rename(lsoa_name = `LSOA 2021 Name`, lsoa_code = `LSOA 2021 Code`) %>%
+  filter(lsoa_code != "", !str_starts(lsoa_code, "W")) %>%   # keep England only
+  select(-c(1, 2, 5)) %>% # drop LAD/total cols
+  pivot_longer(
+    cols = starts_with(c("F", "M")),  # all F* and M* columns
+    names_to = c("sex", "age"),       # create two new columns
+    names_pattern = "([FM])(\\d+)",   # extract letter and digits
+    values_to = "population"          # name of the values column
+  ) %>%
+  mutate(
+    sex = recode(sex, F = "Females", M = "Males"),
+    age = as.integer(age)
+  )
+
+
 # Geographical Hierarchy (as of 2011)
 # Source: https://geoportal.statistics.gov.uk/datasets/ons::lsoa-2011-to-travel-to-work-area-december-2011-exact-fit-lookup-in-the-uk/about
 
@@ -269,7 +295,7 @@ age-standardised mortality rates by sex for each LSOA relative to
 England as a whole. ASDR are not publicly available at LSOA, therefore,
 we calculated them.
 
-```{r}
+```{r mortality-syoa}
 
 lifetable_england <- lifetable_england[, -c(3,7,8,10)] 
 
@@ -306,7 +332,7 @@ construct ratios using European standard population for validation
 purposes of data by LAD (for which there are publicly available ASDR by
 LAD and sex).
 
-```{r}
+```{r pop-weights}
 # Population weight for each age group within all lsoas in England. England is our reference population, since the RRs will then be multiplied by death rates by age and sex for the whole of England. 
 
 # Calculate age-specific population and join with gender totals
@@ -355,7 +381,7 @@ population_weights_europe <- european_pop_2 %>%
 
 A relative mortality rate is produced for each area (lsoa), defined as
 the age-standardised mortality rate by sex for each lsoa relative to the
-average mortality in England by sex**.**
+average mortality in England by sex.
 
 The age-standardized mortality rate (ASMR) (direct standardization) by
 sex and lsoa is calculated by first finding the age-specific (mortality)
@@ -381,7 +407,7 @@ ASDRs.
 
 ### LSOAs. MSOAs and LADs ASDRs by sex
 
-```{r}
+```{r relative-risks}
 
 # note function uses eur rates; can replace with eng rates when calling, to compare
 compute_asdr <- function(df_deaths, df_pop, by_keys,
@@ -465,7 +491,7 @@ deaths_lad_eng_asdr <- compute_asdr(
 
 ## Deprivation data
 
-```{r}
+```{r deprivation}
 
 # Tidy IMD at LSOA11 level
 deprivation_lsoa11 <- deprivation %>%
@@ -530,7 +556,7 @@ england_lsoa_deaths <- deaths_lsoa_eng_asdr %>%
 
 ## Apply to life tables, calibrate and smooth
 
-```{r}
+```{r calibrate}
 # Apply LSOA relative risks to life table
 
 england_lifetable_lsoa <- england_lsoa_deaths %>% 
@@ -683,7 +709,7 @@ print(check_england_total)
 
 ```
 
-```{r}
+```{r smooth}
 # Smooth, as calibration results in some jumps (need to check again after smoothing it matches observed) - takes about 50 minutes
 
 england_lsoa21_syoa_smoothed <- england_lsoa21_syoa_cal %>%
@@ -797,56 +823,54 @@ View(check_england_by_ageband_sm)
 
 
 # Save calibrated & smoothed output with imd
-readr::write_csv(
-  england_lsoa21_syoa_smoothed,
-  here::here("health_data/processed/england_lsoa21_mxrates.csv")
-)
+saveRDS(england_lsoa21_syoa_smoothed,
+  here::here("health_data/processed/england_lsoa21_mxrates.rds"))
 
 ```
 
 
-## Lifetables by LAD and IMD
+## Lifetable by IMD
 
-```{r}
-## SP note: can't aggregate using mean weighted by population  for ages over 100,
-## as we only have populations up to 90
+```{r livetable-imd}
 
-## Issues to resolve:
-## - handling ages above 90 (could just make it mean instead of weighted mean?)
-## - areas with NA for their deprivation
+# stretch population table to cover ages 0 to 100 (age '90' is in fact 90+, so
+# this imputes the '90' value to each year 90 to 100) - inflates pop numbers for 
+# 90+, but that's OK as they are used for weighting by year of age, not to 
+# calculate total population
 
-# lifetable by LAD and IMD, based on calibrated results
-england_lifetable_lad_imd <- england_lsoa21_syoa_smoothed %>%
-  dplyr::select(lsoa21cd, LAD22CD, LAD22NM, sex, age, rate1000, imd_decile) %>%
+# SP NOTE: could replace this with 2023 population, as in disease below
+
+# calculate total pop
+age_90_data <- pop21_syoa %>% filter(age == 90) 
+
+# Create new rows for ageyr 96 to 100, repeating the values for val_interpolated
+new_rows <- age_90_data %>%
+  mutate(age = list(91:100)) %>%
+  unnest(age) 
+
+# combine with population to age 90
+pop_stretched <- bind_rows(pop21_syoa, new_rows) %>%
+  rename(sex = gender) %>%
+  dplyr::select(-LAD22CD)
+
+# lifetable by IMD, based on calibrated results
+england_lifetable_imd <- england_lsoa21_syoa_smoothed %>%
+  dplyr::select(lsoa21cd, sex, age, rate1000, imd_decile) %>%
   
   # join population
-  left_join(pop21_syoa %>%
-              dplyr::select(lsoa21cd, sex = gender, age, population), 
-            by = c("lsoa21cd",  "sex", "age")) %>%
-  
-  # # remove NAs (which are ages > 90)
-  # filter(!is.na(population)) %>%
-  
-  # alternative, so that ages over 90 are retained but effectively unweighted,
-  # by giving all LSOAs the same weight (nominal value of 1)
-  mutate(population = ifelse(age > 90 & is.na(population),
-                             1, population)) %>%
+  left_join(pop_stretched, by = c("lsoa21cd",  "sex", "age")) %>%
   
   # remove where zero population
   filter(population > 0) %>%
   
-  # aggregate to LAD and IMD
-  group_by(LAD22CD, LAD22NM, imd_decile, age, sex) %>%
+  # aggregate to IMD
+  group_by(imd_decile, age, sex) %>%
   summarise(rate1000 = weighted.mean(rate1000, w = population),
             population = sum(population),
             .groups = "drop")
 
 # save output
-write.csv(
-  england_lifetable_lad_imd, 
-  here("health_data/processed/england_lifetable_lad_imd.csv"),
-  row.names = FALSE
-)
+saveRDS(england_lifetable_imd, here("health_data/processed/england_imd_mxrates.rds"))
 
 ```
 
@@ -855,7 +879,7 @@ write.csv(
 
 ### Deaths rates for England
 
-```{r}
+```{r graph-death-england}
 # Graph death rates england
 
 ### Graph for England
@@ -890,17 +914,16 @@ print(p_england)
 ### Deaths rates for England by LAD and IMD
 
 
-```{r}
-# Graph death rates england by LAD and IMD
+```{r graph-death-imd}
+# Graph death rates England by IMD
 
-data_plot_lad_imd <- england_lifetable_lad_imd %>%
-  mutate(lad_imd = paste(LAD22NM, imd_decile, sep = "_")) %>%
+data_plot_imd <- england_lifetable_imd %>%
   mutate(imd_decile = as.factor(imd_decile))  # Ensure imd_decile is a factor
 
-p_lad_imd<- ggplot(data_plot_lad_imd, 
+p_imd<- ggplot(data_plot_imd, 
                    aes(x = age, y = rate1000,
                        col = imd_decile,  # Color by imd_decile
-                       group = lad_imd)) +  # Each LAD/IMD combination has its own line
+                       group = imd_decile)) +  # Each imd_decile has its own line
   geom_line(lwd = 0.7, alpha = 0.5) +  # Reduce opacity to manage overplotting
   facet_wrap(~ sex) +  # Compare IMD deciles within each sex
   ylab("Mortality rate (per 1000)") + 
@@ -912,10 +935,10 @@ p_lad_imd<- ggplot(data_plot_lad_imd,
     strip.text = element_text(face = "bold"),
     legend.position = "bottom"  # Move legend for readability
   ) +
-  ggtitle("Death rates England by LAD and IMD decile")  # Add title
+  ggtitle("Death rates England by IMD decile")  # Add title
 
 # Print the plot
-print(p_lad_imd)
+print(p_imd)
 
 ```
 
@@ -931,7 +954,7 @@ England population weights and stdr_rate_eu is our estimates using
 European standard population weights. Our estimates using European
 standard rates compare with published ONS rates.
 
-```{r}
+```{r death-compare}
 
 # Comparison using English weights. Belen note (07/11/2025) after checking results using english weights and Euro weights, data aligns with published estimates with Euro weights, so using those, using english weights pushes all rates down. 
 
@@ -963,7 +986,7 @@ print(comparison_table)
 
 
 
-# Disease Incidence - BELOW HERE NOT ADDRESSED YET
+# Disease Incidence and Prevalence
 
 For a list of diseases related to the modeled health risk factors
 including physical activity, air pollution (PM25 and NO2), noise and
@@ -982,197 +1005,66 @@ cancer.
 4\) Replace rates for LADs with small numbers of incidence and
 prevalence with higher level data for Greater Manchester.
 
-For colon cancer, we adjusted incidence and prevalence based on
-estimates from the American Cancer Society in the absence of estimates
-for England. 2/3 of colon and rectum cancer is attributed to colon
-cancer
-(<https://www.cancer.org/cancer/types/colon-rectal-cancer/about/key-statistics.html>).
+## Data sources
 
-For lung cancer, we compare total Tracheal, bronchus, and lung cancer
-from GBD data with England statistics
-(<https://digital.nhs.uk/data-and-information/publications/statistical/cancer-registration-statistics/england-2021---summary-counts-only/cancer-incidence>).
-GBD estimates 38,829 incident cases of Tracheal, bronchus, and lung
-cancer and estimates from England indicate 20,742. We assume that 54% of
-Tracheal, bronchus, and lung cancer is lung cancer for both incidence
-and prevalence.
+Diseases for all of England by 5-year age bands and sex for year 2023 from GBD, downloaded 12-Oct-25.
 
-## Data Sources
+<https://vizhub.healthdata.org/gbd-results/>
 
-```{r include = FALSE}
-# GBD data for Manchester LADs
-gbd <- bind_rows(
-  read.csv(here("manchester/health/original/GBD/IHME-GBD_2021_data-bfdf8007-1.csv")), 
-  read.csv(here("manchester/health/original/gbd/IHME-GBD_2021_DATA-125d4b23-1.csv")), 
-  read.csv(here("manchester/health/original/gbd/IHME-GBD_2021_DATA-1316cd33-1.csv")),
-  read.csv(here("manchester/health/original/gbd/IHME-GBD_2021_DATA-cffadb37-1.csv")),
-  read.csv(here("manchester/health/original/gbd/IHME-GBD_2021_DATA-131cf659-1.csv")),
-  read.csv(here("manchester/health/original/gbd/IHME-GBD_2021_DATA-4fbe0549-1.csv")), 
-  read.csv(here("manchester/health/original/gbd/parkinsons1.csv")),
-  read.csv(here("manchester/health/original/gbd/parkinsons3.csv")))
+    Parameters:
+    - GBD Estimate - Cause of death or injury
+    - Measure: Incidence, Prevalence
+    - Metric: Number, Percent, Rate
+    - Cause: Stroke, Ischemic heart disease, Breast cancer, Uterine cancer, Tracheal, bronchus and lung cancer, Colon and rectum cancer, Esophageal cancer, Liver cancer, Stomach cancer, Chronic myeloid leukemia, Multiple myeloma, Larynx cancer, Lip and oral cavity cancer, Nasopharynx cancer, Other pharynx cancer, Bladder cancer, Depressive disorders, Alzheimer’s disease and other dementias, Diabetes mellitus type 2, Parkinson's diseasee [total 20]
+    - Location: England
+    - Age: <5, 5-9, 10-14, … 90-94, 95+ [total 20]
+    - Sex: Female, Male
+    - Year: 2023
+    - Names (not IDs)
 
-gbdp <- gbd_process(gbd) %>%
-  filter(measure %in% c("Prevalence", "Incidence"))
-write_csv(gbdp, here("manchester/health/processed/gbdp.csv"))
+For colon cancer, in the absence of estimated for England, we adjusted incidence and prevalence based on estimates from the American Cancer Society (<https://www.cancer.org/cancer/types/colon-rectal-cancer/about/key-statistics.html>, accessed 12-Oct-25). Estimates for 2025 are 107,320 new cases of colon cancer and 46,950 estimates of rectal cancer.  We assume that 70% of Colon and rectum cancer is colon cancer for both incidence and prevalence
 
-# GBD data for Northwest (just diseases with low numbers for LADs in Grater Manchester)
+For lung cancer, we compare total Tracheal, bronchus, and lung cancer incidence for 2021 from GBD data (<https://vizhub.healthdata.org/gbd-results/>, accessed 12-Oct-25) with England lung cancer incidence statistics for 2021 (<https://digital.nhs.uk/data-and-information/publications/statistical/cancer-registration-statistics/england-2021---summary-counts-only/cancer-incidence>, accessed 12-Oct-25). GBD estimates 37,682 incident cases of Tracheal, bronchus, and lung cancer and estimates from England indicate 20,312. We assume that 54% of Tracheal, bronchus, and lung cancer is lung  cancer for both incidence and prevalence.
 
-gbd_england <-  read.csv(here("manchester/health/original/GBD/england_nortwest.csv"))
+```{r cleanup-disease}
+# disease data creates a large table, so begin by cleaning up everything except 
+# what will be required for the table
 
-
-gbdp_nw <- gbd_england %>% filter(location == "North West England") %>%
-  gbd_process(.) %>%
-  filter(measure %in% c("Prevalence", "Incidence"))
-write_csv(gbdp_nw, here("manchester/health/processed/gbdp_nw.csv"))
-
-gbdp_england <- gbd_england %>% filter(location == "England") %>%
-  gbd_process(.) %>%
-  filter(measure %in% c("Prevalence", "Incidence"))
-write_csv(gbd_england, here("manchester/health/processed/gbdp_england.csv"))
-```
-
-## Replace small diseases
-
-For health-state transitions  ≥20 cases per 100,000 as a baseline
-threshold for age specific rates
-<https://www.cdc.gov/nchs/data/series/sr_02/sr02-200.pdf>.
-
-Information on the average age onset of diseases is also needed to set a
-lower threshold below which the min cases per 100,000 does not apply.
-
-| Disease                                          | Average onset age                                                                                             | Source                                                                                                                                                                       |
-|------------------|----------------------|---------------------------------|
-| **Major Depressive Disorder**                    | Often emerges during adolescence or early adulthood, typically between ages 18 and 25                         | [NHS & Mental Health Foundation UK](http%20s://www.me%20ntalhealth%20.org.uk/); [National Institute for Health and Care Excellence (NIC E)](https:%20//www.nice%20.org.uk/). |
-| **Prostate Cancer**                              | Commonly diagnosed in men aged 65 and older.​                                                                  | [Cancer Research UK](https%20://www.can%20cerresearc%20huk.org/).                                                                                                            |
-| **Colon and Rectum Cancer**                      | The majority of cases are diagnosed in individuals over 50.​                                                   | [NHS Bowel Cancer Screening Progra mme](https%20://www.nhs%20.uk/condit%20ions/bowel%20-cancer-sc%20reening/).                                                               |
-| **Nasopharynx Cancer**                           | More prevalent in individuals between 30 and 50 years old.​                                                    | \[British Journal of Cancer\] (https://w ww.nature. com/bjc/).                                                                                                               |
-| **Kidney Cancer**                                | Often diagnosed between ages 55 and 75.                                                                       | [Cancer Research UK](https%20://www.can%20cerresearc%20huk.org/).                                                                                                            |
-| **Bladder Cancer**                               | Typically found in individuals over 55.​                                                                       | [NHS Cancer Statistics](https://%20www.nhs.uk%20/condition%20s/cancer/)                                                                                                      |
-| **Chronic Myeloid Leukemia (CML)**               | The median age at diagnosis is approximately 65 years.​                                                        | [Leukaemia Care UK](http%20s://www.le%20ukaemiacar%20e.org.uk/)                                                                                                              |
-| **Multiple Myeloma**                             | The median age at diagnosis is around 67 years.                                                               | [Myeloma UK](https://%20www.myelom%20a.org.uk/)                                                                                                                              |
-| **Cardiovascular Diseases**                      | Risk increases with age, particularly after 45 for men and 55 for women.                                      | [British Heart Foundat ion](https%20://www.bhf%20.org.uk/).                                                                                                                  |
-| **Tracheal, Bronchus, and Lung Cancer**          | Most commonly diagnosed in individuals over 65.​                                                               | [British Lung Foundat ion](https%20://www.blf%20.org.uk/).                                                                                                                   |
-| **Stomach Cancer**                               | More frequently diagnosed in people over 65.                                                                  | [Cancer Research UK](https%20://www.can%20cerresearc%20huk.org/).                                                                                                            |
-| **Uterine Cancer**                               | Most cases occur in women over 50.                                                                            | \[NHS England\] (https://w ww.england .nhs.uk/).                                                                                                                             |
-| **Stroke**                                       | Risk increases with age, with most strokes occurring in individuals over 65.​                                  | [Stroke A ssociation UK](https://%20www.stroke%20.org.uk/).                                                                                                                  |
-| **Malignant Skin Melanoma**                      | Average age at diagnosis is around 63 years, though it is also common in younger adults.​                      | [UK D ermatology Soci ety](https%20://www.bad%20.org.uk/).                                                                                                                   |
-| **Lip and Oral Cavity Cancer**                   | Typically diagnosed in individuals over 60.​                                                                   | [British Dental Assoc iation](ht%20tps://www.%20bda.org/).                                                                                                                   |
-| **Other Pharynx Cancer**                         | Often diagnosed in people between 50 and 60 years old.​                                                        | [Cancer Research UK](https%20://www.can%20cerresearc%20huk.org/).                                                                                                            |
-| **Larynx Cancer**                                | Most common in individuals aged 55 to 74.​                                                                     | \[NHS England\] (https://w ww.england .nhs.uk/).                                                                                                                             |
-| **Esophageal Cancer**                            | Typically diagnosed between ages 55 and 85.​                                                                   | [Cancer Research UK](https%20://www.can%20cerresearc%20huk.org/).                                                                                                            |
-| **Ischemic Stroke**                              | Similar to general stroke statistics, with most cases occurring in individuals over 65.​                       |                                                                                                                                                                              |
-| **Breast Cancer**                                | The median age at diagnosis is approximately 62 years                                                         | [Breast Cancer Now UK](https://br%20eastcancer%20now.org/).                                                                                                                  |
-| **Liver Cancer**                                 | Most commonly diagnosed in individuals over 60.​                                                               | [Cancer Research UK](https%20://www.can%20cerresearc%20huk.org/).                                                                                                            |
-| **Chronic Obstructive Pulmonary Disease (COPD)** | Typically diagnosed in individuals aged 40 and older.​                                                         | [British Lung Foundat ion](https%20://www.blf%20.org.uk/).                                                                                                                   |
-| **Diabetes Mellitus Type 2**                     | Commonly diagnosed in adults over 45, though increasing rates are observed in younger populations.            | \[Diabetes UK\] (https://w ww.diabete s.org.uk/)                                                                                                                             |
-| **Ischemic Heart Disease**                       | Risk increases significantly after 45 for men and 55 for women.​                                               | [British Heart Foundat ion](https%20://www.bhf%20.org.uk/).                                                                                                                  |
-| **Alzheimer's Disease and Other Dementias**      | Most commonly diagnosed in individuals over 65, with risk doubling approximately every five years thereafter.​ | [A lzheimer's Society UK](ht%20tps://www.%20alzheimers%20.org.uk/).                                                                                                          |
-| **Parkinson's Disease**                          | Average age at diagnosis is around 60 years, though early-onset forms can occur before 50.                    | [P arkinson’s UK](ht%20tps://www.%20parkinsons%20.org.uk/).                                                                                                                  |
-
-```{r}
-
-### Data for England and NorthWest is only for diseases identified as having small numbers for LADs and Greater Manchester (Breast cancer, Esophageal cancer, Stomach cancer, Nasopharynx cancer, Chronic myeloid leukemia, Larynx cancer, Other pharynx cancer, Multiple myeloma, Diabetes mellitus type 2, Lip and oral cavity cancer, Liver cancer, Bladder cancer)
-
-
-
-# Flag LAD groups with any value < 20 from age 40+
-lad_group_flags <- gbdp %>%
-  group_by(measure, location, sex, agegroup, from_age, to_age, cause, metric, year, agediff) %>%
-  summarise(replace_group = any(val < 20 & from_age >= 40), .groups = "drop")
-
-# Attach replace flag to LAD-level data
-gbd_lads_flagged <- gbdp %>%
-  left_join(lad_group_flags, by = c("measure", "location", "sex", "agegroup", "from_age", "to_age", "cause", "metric", "year", "agediff"))
-
-# Prepare fallback datasets
-
-# GM fallback — aggregate LADs into GM
-gbdp_GM <- gbdp %>%
-  group_by(measure, sex, agegroup, from_age, to_age, cause, metric, year, agediff) %>%
-  summarise(
-    val_GM = sum(val),
-    val1yr_GM = sum(val1yr),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    rate_1_GM = val_GM / 100000,
-    fallback_valid_GM = val_GM >= 20 & from_age >= 40
-  )
-
-#  NW fallback — already aggregated
-gbdp_nw_clean <- gbdp_nw %>%
-  rename(
-    val_NW = val,
-    val1yr_NW = val1yr,
-    rate_1_NW = rate_1
-  ) %>%
-  mutate(
-    fallback_valid_NW = val_NW >= 20 & from_age >= 40
-  )
-
-# England fallback — already aggregated, always acceptable
-gbdp_england_clean <- gbdp_england %>%
-  rename(
-    val_ENG = val,
-    val1yr_ENG = val1yr,
-    rate_1_ENG = rate_1
-  )
-
-# Join fallback data to LAD-level observations
-gbd_joined <- gbd_lads_flagged %>%
-  rename(original_location = location) %>%
-  left_join(gbdp_GM, by = c("measure", "sex", "agegroup", "from_age", "to_age", "cause", "metric", "year", "agediff")) %>%
-  left_join(gbdp_nw_clean, by = c("measure", "sex", "agegroup", "from_age", "to_age", "cause", "metric", "year", "agediff")) %>%
-  left_join(gbdp_england_clean, by = c("measure", "sex", "agegroup", "from_age", "to_age", "cause", "metric", "year", "agediff"))
-
-#  Replace LAD values where flagged, based on fallback hierarchy
-gbd_final <- gbd_joined %>%
-  mutate(
-    replaced_with = case_when(
-      replace_group & fallback_valid_GM ~ "Greater Manchester",
-      replace_group & !fallback_valid_GM & fallback_valid_NW ~ "North West",
-      replace_group & (!fallback_valid_GM & !fallback_valid_NW) ~ "England",
-      TRUE ~ "Original"
-    ),
-    val = case_when(
-      replace_group & fallback_valid_GM ~ val_GM,
-      replace_group & !fallback_valid_GM & fallback_valid_NW ~ val_NW,
-      replace_group & (!fallback_valid_GM & !fallback_valid_NW) ~ val_ENG,
-      TRUE ~ val
-    ),
-    val1yr = case_when(
-      replace_group & fallback_valid_GM ~ val1yr_GM,
-      replace_group & !fallback_valid_GM & fallback_valid_NW ~ val1yr_NW,
-      replace_group & (!fallback_valid_GM & !fallback_valid_NW) ~ val1yr_ENG,
-      TRUE ~ val1yr
-    ),
-    rate_1 = case_when(
-      replace_group & fallback_valid_GM ~ rate_1_GM,
-      replace_group & !fallback_valid_GM & fallback_valid_NW ~ rate_1_NW,
-      replace_group & (!fallback_valid_GM & !fallback_valid_NW) ~ rate_1_ENG,
-      TRUE ~ rate_1
-    ),
-    location = original_location
-  ) %>%
-  select(measure, sex, cause, year, agegroup, from_age, to_age,
-         val, val1yr, rate_1, location, replaced_with, agediff)
-
-# View how many groups were replaced
-table(gbd_final$replaced_with)
-
-gbdp <- gbd_final
-write_csv(gbd_final, here("manchester/health/processed/gbd_processed.csv"))
+rm(list = setdiff(ls(), 
+                  c(lsf.str(), ## keeps functions
+                    "england_lsoa_deaths", "deprivation_lsoa21",
+                    "pop_england_syoa_2023")))
 
 ```
+
+
+```{r gbd-data}
+# GBD data for all of England
+gbd <- readr::read_csv(unzip(here("health_data/original/gbd/IHME-GBD_2023_DATA-4a0d002f-1.zip"),
+                                  "IHME-GBD_2023_DATA-4a0d002f-1.csv"))
+
+## if that is saving unwanted files, substitute:
+# csvfile <- unzip(here("health_data/original/gbd/IHME-GBD_2023_DATA-4a0d002f-1.zip"),
+#                  "IHME-GBD_2023_DATA-4a0d002f-1.csv")
+# gbd <- read_csv(csvfile)
+# file.remove(csvfile)
+
+gbdp <- gbd_process(gbd, year = 2023) %>%
+  filter(measure %in% c("Prevalence", "Incidence"))
+
+```
+
 
 ## Interpolation
 
-```{r}
+Plots comparing gbd incidence rates before and after interpolation are saved in the `images/inc_gbd_age_sex` folder.  
+
+```{r gbd-interpolation}
 # Now stretch the data out using an index, to create a data frame with 1 row per year of age and create a variable for year of age. 
 # The age group rate repeats within single years of age in the group. 
 index <- rep(1:nrow(gbdp), gbdp$agediff)
 gbdpyrd5 <- gbdp[index,] %>%
-  mutate(ageyr = from_age + sequence(gbdp$agediff) - 1)
-gbdpyrd5 <- gbdpyrd5 %>%  
+  mutate(ageyr = from_age + sequence(gbdp$agediff) - 1) %>%
   select(measure, ageyr, sex, agegroup, from_age, to_age, cause, year, val1yr,rate_1, location) 
 
 # Apply the disaggregation function
@@ -1201,30 +1093,10 @@ gbdpyr_interp <- bind_rows(gbdpyr_interp, new_rows)
 
 rm(new_rows, age_95_data)
 
-# Merge with lad zones data
- gbdpyr_interp <- msoa %>%
-   select(ladcd = LAD11CD, location = LAD11NM) %>% 
-   distinct() %>%
-   filter(str_starts(location, "Bolton") |
-       str_starts(location, "Bury") |
-       str_starts(location, "Manchester") |
-       str_starts(location, "Oldham") |
-       str_starts(location, "Rochdale") |
-       str_starts(location, "Salford") |
-       str_starts(location, "Stockport") |
-       str_starts(location, "Tameside") |
-       str_starts(location, "Trafford") |
-       str_starts(location, "Wigan")) %>% 
-   left_join(gbdpyr_interp, by = "location")
-
-#Note: this is a very big file, so changed to RDS
-write_rds(gbdpyr_interp, here("manchester/health/processed/manchester_diseases_lad.RDS"))
-
-#Join with original data where rates are the same within groups to validate interpolated data
+# Join with original data where rates are the same within groups to validate interpolated data
 gbdpyr_interp <- gbdpyr_interp %>%
   left_join(gbdpyrd5, by = c("measure", "year", "ageyr", "sex", "cause", "location"))
 
-### Below takes a long time, unless somethings changes, once graphs generated, no need to run again.
 # Plot data to check interpolated values against 5-year age group values (original data)
 ## Four interpolation function could be use, the best fit should be used. For now, best fit to the data assessed visually.
 
@@ -1234,7 +1106,7 @@ plot_data <- gbdpyr_interp %>%
   pivot_longer(cols = c(rate_1, val_interpolated), names_to = "type", values_to = "value")
 
 # Define output directory
-output_dir <- "images/manchester/inc_gbd_age_sex/"
+output_dir <- "health_data/images/inc_gbd_age_sex/"
 if (!dir.exists(output_dir)) {
   dir.create(output_dir, recursive = TRUE)
 }
@@ -1266,49 +1138,329 @@ for (i in 1:nrow(combinations)) {
 }
 ```
 
-# Combining All-cause Mortality and Disease Incidence Data
+## Apply relative risks and add deprivation data
 
-```{r}
+We apply the relative risks for each LSOA to the disease data.  We assume that the relative risks calculated above for mortality apply also to disease. *[This assumption may be reconsidered further.]*
 
-### NAMES NEED TO MATCH CODE FOR HEALTH MODEL
+```{r gbd-relative-risk}
 
-diseases <- readRDS(here("manchester/health/processed/manchester_diseases_lad.RDS"))
-allcause <- read.csv(here("manchester/health/processed/manchester_mortality_lsoa_070325.csv"))
-lsoa_11to21 <- read.csv(here("manchester/health/original/ons/lsoa_2011_to_lsoa_2021.csv"))
+# Clean up again before creating large table
+rm(list = setdiff(ls(), 
+                  c(lsf.str(), ## keeps functions
+                    "england_lsoa_deaths", "deprivation_lsoa21",
+                    "pop_england_syoa_2023", "gbdpyr_interp")))
 
-# Process data 
+# Apply LSOA relative risks (as calculated for deaths) to disease data
+england_diseasetable_lsoa_imd <- gbdpyr_interp %>%
+  mutate(sex = recode(sex, "Female" = "Females", "Male" = "Males")) %>%
+  dplyr::select(measure, sex, cause, age = ageyr, rate = val_interpolated) %>%
+  left_join(england_lsoa_deaths %>%
+              dplyr::select(lsoa_code, lsoa_name, sex = gender, RR),
+            by = "sex", relationship = "many-to-many") %>%
+  mutate(rate1000 = rate * 1000 * RR) %>%
+  select(measure, lsoa_code, lsoa_name, cause, sex, age, rate1000, RR) %>%
+  # join deprivation data
+  left_join(deprivation_lsoa21 %>% dplyr::select(lsoa21_code, imd_decile), 
+            by = c("lsoa_code" = "lsoa21_code"))
+
+# save output with IMD 
+saveRDS(england_diseasetable_lsoa_imd, 
+        here("health_data/processed/england_lsoa21_diseaserates.rds"))
+
+```
+
+## Disease rates by IMD
+
+```{r disease-imd}
+
+# stretch population table to cover ages 0 to 100 (age '90' is in fact 90+, so
+# this imputes the '90' value to each year 90 to 100) - inflates pop numbers for 
+# 90+, but that's OK as they are used for weighting by year of age, not to 
+# calculate total population
+
+# calculate total pop
+age_90_data <- pop_england_syoa_2023 %>% filter(age == 90)
+
+# Create new rows for ageyr 96 to 100, repeating the values for val_interpolated
+new_rows <- age_90_data %>%
+  mutate(age = list(91:100)) %>%
+  unnest(age) 
+
+# combine with population to age 90
+pop_stretched <- bind_rows(pop_england_syoa_2023, new_rows) %>%
+  dplyr::select(-lsoa_name)
+
+
+# disease table by IMD
+england_diseasetable_imd <- england_diseasetable_lsoa_imd %>%
+  
+  # join population
+  left_join(pop_stretched, by = c("lsoa_code", "sex", "age")) %>%
+  
+  # remove where zero population
+  filter(population > 0) %>%
+  
+  # aggregate to IMD
+  group_by(measure, cause, imd_decile, age, sex) %>%
+  summarise(rate1000 = weighted.mean(rate1000, w = population),
+            population = sum(population),
+            .groups = "drop")
+
+# save output
+saveRDS(england_diseasetable_imd, 
+        here("health_data/processed/england_imd_diseaserates.rds"))
+
+```
+
+## Graphs for checking results
+
+``` {r disease-graph-cleanup}
+# Clean up again before creating graphs from large table
+rm(list = setdiff(ls(), 
+                  c(lsf.str(), ## keeps functions
+                    "england_diseasetable_lsoa_imd",
+                    "england_diseasetable_imd")))
+
+incidence_lsoa <- england_diseasetable_lsoa_imd %>% filter(measure == "Incidence")
+prevalence_lsoa <- england_diseasetable_lsoa_imd %>% filter(measure == "Prevalence")
+rm(england_diseasetable_lsoa_imd)
+
+```
+
+### Disease incidence rates for England
+
+Plots of disease incidence rates by LSOA are saved in the `images/inc_lsoa_age_sex` folder.  
+
+```{r graph-incidence}
+
+# graphs of incidence of disease rates, by lsoa
+
+# Define output directory
+output_dir <- "health_data/images/inc_lsoa_age_sex/"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+for (i in unique(incidence_lsoa$cause)) {
+  data_plot <- incidence_lsoa %>%
+    filter(cause == i) %>%
+    mutate(imd_decile = as.factor(imd_decile)) %>%
+    filter(!is.na(imd_decile))
+  
+  plot_title <- paste("Disease incidence rates for England:", i)
+  
+  p <- ggplot(data_plot,
+              aes(x = age, y = rate1000,
+                  col = imd_decile, # colour by IMD decile
+                  group = lsoa_code)) +  # each LSOA has its own line
+    geom_line(lwd = 0.7, alpha = 0.5) +
+    facet_wrap (~ sex) +
+    ylab("Disease incidence rate (per 1000)") +
+    xlab("Age (years)") +
+    scale_y_continuous(trans = "log", breaks = c(0.2, 0.5, 1, 5, 10, 50, 100, 200)) +
+    scale_color_viridis_d(option = "C", name = "IMD Decile") +  # Use discrete color scale
+    theme_bw(base_size = 14) +  
+    theme(
+      strip.text = element_text(face = "bold"),
+      legend.position = "bottom"  ) +
+    ggtitle(plot_title)  
+  
+  # Save the plot
+  ggsave(filename = here(paste0(output_dir, "plot_", i, ".png")), plot = p, width = 12, height = 6)
+
+}
+
+```
+
+### Disease incidence rates for England by IMD
+
+Plots of disease incidence rates for IMD deciles are saved in the `images/inc_imd_age_sex` folder.  
+
+```{r graph-incidence-imd}
+
+# graphs of incidence of disease rates, by imd groups
+
+# Define output directory
+output_dir <- "health_data/images/inc_imd_age_sex/"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+for (i in unique(england_diseasetable_imd$cause)) {
+  data_plot <- england_diseasetable_imd %>%
+    filter(measure == "Incidence" & cause == i) %>%
+    mutate(imd_decile = as.factor(imd_decile)) %>%
+    filter(!is.na(imd_decile))
+  
+  plot_title <- paste("Disease incidence rates for England by IMD decile:", i)
+  
+  p <- ggplot(data_plot,
+              aes(x = age, y = rate1000,
+                  col = imd_decile, # colour by IMD decile
+                  group = imd_decile)) +  # each imd_decile has its own line
+    geom_line(lwd = 0.7, alpha = 0.5) +
+    facet_wrap (~ sex) +
+    ylab("Disease incidence rate (per 1000)") +
+    xlab("Age (years)") +
+    scale_y_continuous(trans = "log", breaks = c(0.2, 0.5, 1, 5, 10, 50, 100, 200)) +
+    scale_color_viridis_d(option = "C", name = "IMD Decile") +  # Use discrete color scale
+    theme_bw(base_size = 14) +  
+    theme(
+      strip.text = element_text(face = "bold"),
+      legend.position = "bottom"  ) +
+    ggtitle(plot_title)  
+  
+  # Save the plot
+  ggsave(filename = here(paste0(output_dir, "plot_", i, "_imd.png")), plot = p, width = 12, height = 6)
+
+}
+
+```
+
+### Disease prevalence rates for England
+
+Plots of disease prevalence rates by LSOA are saved in the `images/prev_lsoa_age_sex` folder.  
+
+```{r graph-prevalence}
+
+# graphs of prevalence of disease rates, by lsoa
+
+# Define output directory
+output_dir <- "health_data/images/prev_lsoa_age_sex/"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+for (i in unique(prevalence_lsoa$cause)) {
+  data_plot <- prevalence_lsoa %>%
+    filter(cause == i) %>%
+    mutate(imd_decile = as.factor(imd_decile)) %>%
+    filter(!is.na(imd_decile))
+  
+  plot_title <- paste("Disease prevalence rates for England:", i)
+  
+  p <- ggplot(data_plot,
+              aes(x = age, y = rate1000,
+                  col = imd_decile, # colour by IMD decile
+                  group = lsoa_code)) +  # each LSOA has its own line
+    geom_line(lwd = 0.7, alpha = 0.5) +
+    facet_wrap (~ sex) +
+    ylab("Disease prevalence rate (per 1000)") +
+    xlab("Age (years)") +
+    scale_y_continuous(trans = "log", breaks = c(0.2, 0.5, 1, 5, 10, 50, 100, 200)) +
+    scale_color_viridis_d(option = "C", name = "IMD Decile") +  # Use discrete color scale
+    theme_bw(base_size = 14) +  
+    theme(
+      strip.text = element_text(face = "bold"),
+      legend.position = "bottom"  ) +
+    ggtitle(plot_title)  
+  
+  # Save the plot
+  ggsave(filename = here(paste0(output_dir, "plot_", i, ".png")), plot = p, width = 12, height = 6)
+
+}
+
+```
+
+### Disease prevalence rates for England by IMD
+
+Plots of disease prevalence rates for IMD deciles are saved in the `images/prev_imd_age_sex` folder.  
+
+```{r graph-prevalence-imd}
+
+# graphs of prevalence of disease rates, by imd groups
+
+# Define output directory
+output_dir <- "health_data/images/prev_imd_age_sex/"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+for (i in unique(england_diseasetable_imd$cause)) {
+  data_plot <- england_diseasetable_imd %>%
+    filter(measure == "Prevalence" & cause == i) %>%
+    mutate(imd_decile = as.factor(imd_decile)) %>%
+    filter(!is.na(imd_decile))
+  
+  plot_title <- paste("Disease prevalence rates for England by IMD decile:", i)
+  
+  p <- ggplot(data_plot,
+              aes(x = age, y = rate1000,
+                  col = imd_decile, # colour by IMD decile
+                  group = imd_decile)) +  # each imd_decile has its own line
+    geom_line(lwd = 0.7, alpha = 0.5) +
+    facet_wrap (~ sex) +
+    ylab("Disease prevalence rate (per 1000)") +
+    xlab("Age (years)") +
+    scale_y_continuous(trans = "log", breaks = c(0.2, 0.5, 1, 5, 10, 50, 100, 200)) +
+    scale_color_viridis_d(option = "C", name = "IMD Decile") +  # Use discrete color scale
+    theme_bw(base_size = 14) +  
+    theme(
+      strip.text = element_text(face = "bold"),
+      legend.position = "bottom"  ) +
+    ggtitle(plot_title)  
+  
+  # Save the plot
+  ggsave(filename = here(paste0(output_dir, "plot_", i, "_imd.png")), plot = p, width = 12, height = 6)
+
+}
+
+```
+
+
+
+# Combining All-cause Mortality and Disease Incidence Data (by IMD deciles)
+
+Saves the files required by the health model: `health_transitions_prevalence.csv` and `health_transitions_raw.csv`.  *[To confirm that 'raw' is correct.]*
+
+```{r cleanup-combination}
+
+# clean up to remove large tables
+rm(list = setdiff(ls(), lsf.str()))  # keep functions
+
+```
+
+
+```{r combination}
+
+diseases <- readRDS(here("health_data/processed/england_imd_diseaserates.rds"))
+allcause <- readRDS(here("health_data/processed/england_imd_mxrates.rds"))
+
+# Process data ## CHECK THAT CONVERSION OF rate1000 TO rate IS CORRECT
 
 allcause<- allcause %>%
   mutate(cause = "all_cause_mortality",
          measure = "deaths") %>%
-  mutate(sex=case_when(sex == "Males" ~ "male",
-                                  sex=="Females" ~ "female"),
-         location_code = lsoa_code, 
-         age=as.numeric(age)) %>% 
-  dplyr::select(age, sex, location_code, cause, rate, measure) %>%
-  mutate(location_type = "lsoa")
+  mutate(sex = case_when(sex == "Males" ~ "male",
+                         sex == "Females" ~ "female"),
+         location_code = imd_decile, 
+         age = as.numeric(age)) %>% 
+  dplyr::select(age, sex, location_code, cause, rate = rate1000, measure) %>%
+  mutate(location_type = "imd_decile")
 
 diseases <- diseases %>% 
   mutate(measure = tolower(measure),
          cause = tolower(cause),
          socio = NA) %>% 
-  rename(age = ageyr,
-         rate = val_interpolated) %>%
-  mutate(sex=case_when(sex == "Male" ~ "male",
-                                  sex=="Female" ~ "female")) %>%
-  dplyr::select(age, sex, location_code = ladcd,cause, rate, measure) %>%
-  mutate(location_type = "lad")
+  mutate(sex = case_when(sex == "Males" ~ "male",
+                                 sex=="Females" ~ "female"),
+         location_code = imd_decile,
+         age = as.numeric(age)) %>%
+  dplyr::select(age, sex, location_code, cause, rate = rate1000, measure) %>%
+  mutate(location_type = "imd_decile")
 
 incidence <- diseases %>% filter(measure == "incidence") 
 prevalence <- diseases %>% filter(measure == "prevalence") %>%
   mutate(sex=case_when(sex == "male" ~ 1, 
                        sex == "female" ~ 2))
 
-health_transitions_manchester <- bind_rows(allcause, incidence)
+health_transitions <- bind_rows(allcause, incidence)
 
-# Save prevalence and incidence (includes deaths from all causes) separetly
+# Save prevalence and incidence (includes deaths from all causes) separately
 
-write.csv(prevalence, here("manchester/health/processed/health_transitions_manchester_prevalence.csv"))
+write.csv(prevalence, here("health_data/processed/health_transitions_prevalence.csv"),
+          row.names = FALSE)
 
-write.csv(health_transitions_manchester, here("manchester/health/processed/health_transitions_manchester_raw.csv"))
+write.csv(health_transitions, here("health_data/processed/health_transitions_raw.csv"),
+          row.names = FALSE) ### DOES SOMETHING ELSE HAPPEN TO 'RAW'?
 ```
