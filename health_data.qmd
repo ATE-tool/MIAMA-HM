@@ -1588,8 +1588,9 @@ allcause<- allcause %>%
   mutate(sex = case_when(sex == "Males" ~ "male",
                          sex == "Females" ~ "female"),
          location_code = imd_decile, 
-         age = as.numeric(age)) %>% 
-  dplyr::select(age, sex, location_code, cause, rate = rate1000, measure) %>%
+         age = as.numeric(age),
+         rate = rate1000 / 1000) %>% 
+  dplyr::select(age, sex, location_code, cause, rate, measure) %>%
   mutate(location_type = "imd_decile")
 
 incidence <- incidence %>% 
