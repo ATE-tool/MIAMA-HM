@@ -47,17 +47,15 @@ library(readxl)     # Read/write Excel files
 library(knitr)      # Report generation
 library(gt)         # Pretty tables
 library(here)       # File path management
-library(plotly)     # Interactive plots
-library(htmlwidgets)# Save interactive plots
-library(esquisse)   # Interactive ggplot2 figures [not used?]
 library(mgcv)       # Smoothing
+library(Hmisc)      # Quantiles
 # Set root directory one level up from current directory
 knitr::opts_knit$set(root.dir = dirname(getwd()))
 
 # Functions
 source("functions/interpolation.R") 
 source("functions/gbd_process.R")
-
+source("functions/rateplot.R")
 
 # Avoid scientific notation
 options("scipen"=100, "digits"=4)
@@ -72,7 +70,7 @@ options("scipen"=100, "digits"=4)
 
     <https://www.ons.gov.uk/peoplepopulationandcommunity/birthsdeathsandmarriages/deaths/adhocs/1028deathregistrationsbysexfiveyearagegroupandlowerlayersuperoutputareaslsoa2011censusboundariesenglandandwales2001to2021>
 
-2.  Population Data by LSOA by age and sex for 2018 mid year, and 2023 mid year (downloaded 12-Nov-25), from ONS.
+2.  Population Data by LSOA by age and sex for 2018 mid year, and 2023 mid year [NOT CURRENTLY USED] (downloaded 12-Nov-25), from ONS.
 
     <https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/lowersuperoutputareamidyearpopulationestimates>
 
@@ -224,6 +222,7 @@ rm(pop_males_raw, pop_females_raw,
 # Source: ONS LSOA mid-year population estimates
 # https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/lowersuperoutputareamidyearpopulationestimates
 # note that age '90' in the table is actually 90+ 
+# SP NOTE: not currently used, but option to use it exists in disease data
 
 pop_england_syoa_2023 <- read_xlsx(
   here("health_data/original/ons", "sapelsoasyoa20222024.xlsx"),
@@ -819,7 +818,7 @@ check_england_by_ageband_sm <- check_by_lad_gender_age_sm %>%
     pct_diff = ifelse(observed > 0, 100 * diff / observed, NA_real_),
     .groups  = "drop"
   )
-View(check_england_by_ageband_sm)
+# View(check_england_by_ageband_sm)
 
 
 # Save calibrated & smoothed output with imd
@@ -829,9 +828,11 @@ saveRDS(england_lsoa21_syoa_smoothed,
 ```
 
 
-## Lifetable by IMD
+## Death rates grouped
 
-```{r livetable-imd}
+We summarise death rates in two ways: (1) grouping by IMD decile (weighted mean of the rates for all LSOAs in each IMD decile), and (2) finding the middle rate of the deciles for all LSOAs combined.  In each case, these are based on the calibrated and smoothed rates as calculated above.
+
+```{r deathrates-grouped}
 
 # stretch population table to cover ages 0 to 100 (age '90' is in fact 90+, so
 # this imputes the '90' value to each year 90 to 100) - inflates pop numbers for 
@@ -853,8 +854,8 @@ pop_stretched <- bind_rows(pop21_syoa, new_rows) %>%
   rename(sex = gender) %>%
   dplyr::select(-LAD22CD)
 
-# lifetable by IMD, based on calibrated results
-england_lifetable_imd <- england_lsoa21_syoa_smoothed %>%
+# death rates by IMD decile
+england_deathrates_imd <- england_lsoa21_syoa_smoothed %>%
   dplyr::select(lsoa21cd, sex, age, rate1000, imd_decile) %>%
   
   # join population
@@ -866,83 +867,113 @@ england_lifetable_imd <- england_lsoa21_syoa_smoothed %>%
   # aggregate to IMD
   group_by(imd_decile, age, sex) %>%
   summarise(rate1000 = weighted.mean(rate1000, w = population),
-            population = sum(population),
+            # population = sum(population),
             .groups = "drop")
 
 # save output
-saveRDS(england_lifetable_imd, here("health_data/processed/england_imd_mxrates.rds"))
+saveRDS(england_deathrates_imd, here("health_data/processed/england_imd_mxrates.rds"))
+
+# deathrates by decile midrates
+england_deathrates_decilemid <- england_lsoa21_syoa_smoothed %>%
+  dplyr::select(lsoa21cd, sex, age, rate1000, imd_decile) %>%
+  
+  # join population
+  left_join(pop_stretched, by = c("lsoa21cd",  "sex", "age")) %>%
+  
+  # remove where zero population
+  filter(population > 0) %>%
+  
+  # aggregate to mid-rate of each decile
+  group_by(age, sex) %>%
+    summarise(
+    percentile_5 = wtd.quantile(rate1000, weights = population, probs = 0.05),
+    percentile_15 = wtd.quantile(rate1000, weights = population, probs = 0.15),
+    percentile_25 = wtd.quantile(rate1000, weights = population, probs = 0.25),
+    percentile_35 = wtd.quantile(rate1000, weights = population, probs = 0.35),
+    percentile_45 = wtd.quantile(rate1000, weights = population, probs = 0.45),
+    percentile_55 = wtd.quantile(rate1000, weights = population, probs = 0.55),
+    percentile_65 = wtd.quantile(rate1000, weights = population, probs = 0.65),
+    percentile_75 = wtd.quantile(rate1000, weights = population, probs = 0.75),
+    percentile_85 = wtd.quantile(rate1000, weights = population, probs = 0.85),
+    percentile_95 = wtd.quantile(rate1000, weights = population, probs = 0.95),
+    # population = sum(population),
+    .groups = "drop") %>%
+  pivot_longer(
+    cols = starts_with("percentile_"),
+    names_to = "percentile",
+    values_to = "rate1000"
+  ) %>%
+  mutate(percentile = gsub("percentile_", "", percentile)) %>%
+  dplyr::select(percentile, age, sex, rate1000)
+
+
+# save output
+saveRDS(england_deathrates_decilemid, here("health_data/processed/england_decilemid_mxrates.rds"))
 
 ```
 
 
 ## Graphs for checking results
 
-### Deaths rates for England
+### Death rates by LSOA
 
 ```{r graph-death-england}
-# Graph death rates england
 
-### Graph for England
-# imd_decile is a factor
+# Graph death rates for England by LSOA
 
 data_plot <- england_lsoa21_syoa_smoothed %>%
-  mutate(imd_decile = as.factor(imd_decile))  # Ensure imd_decile is a factor
+  mutate(colour_col = as.factor(imd_decile),
+         group_col = lsoa21cd) 
 
-p_england <- ggplot(data_plot, 
-                    aes(x = age, y = rate1000,
-                        col = imd_decile,  # Color by IMD decile
-                        group = lsoa21cd)) +  # Each LSOA has its own line
-  geom_line(lwd = 0.7, alpha = 0.5) +  # Reduce opacity to manage overplotting
-  facet_wrap(~ sex) +  # Compare IMD deciles within each sex
-  ylab("Mortality rate (per 1000)") + 
-  xlab("Age (years)") +  
-  scale_y_continuous(trans = "log", breaks = c(0.2, 0.5, 1, 5, 10, 50, 100, 200)) +
-  scale_color_viridis_d(option = "C", name = "IMD Decile") +  # Use discrete color scale
-  theme_minimal(base_size = 14) +  
-  theme(
-    strip.text = element_text(face = "bold"),
-    legend.position = "bottom"  # Move legend for readability
-  ) +
-  ggtitle("Death rates England")  # Add title
+p <- rateplot(data_plot, 
+              ylab_plot = "Mortality rate (per 1000)",
+              legend_name = "IMD Decile",
+              plot_title = "Death rates England")
 
-# Print the plot
-print(p_england)
+print(p)
 
-# interactive_p_england <- ggplotly(p_england)  ## SP: SLOW AND CRASHES
 ```
 
-### Deaths rates for England by LAD and IMD
-
+### Death rates by IMD deciles
 
 ```{r graph-death-imd}
-# Graph death rates England by IMD
 
-data_plot_imd <- england_lifetable_imd %>%
-  mutate(imd_decile = as.factor(imd_decile))  # Ensure imd_decile is a factor
+# Graph death rates for England by IMD decile
 
-p_imd<- ggplot(data_plot_imd, 
-                   aes(x = age, y = rate1000,
-                       col = imd_decile,  # Color by imd_decile
-                       group = imd_decile)) +  # Each imd_decile has its own line
-  geom_line(lwd = 0.7, alpha = 0.5) +  # Reduce opacity to manage overplotting
-  facet_wrap(~ sex) +  # Compare IMD deciles within each sex
-  ylab("Mortality rate (per 1000)") + 
-  xlab("Age (years)") +  
-  scale_y_continuous(trans = "log", breaks = c(0.2, 0.5, 1, 5, 10, 50, 100, 200)) +
-  scale_color_viridis_d(option = "C", name = "IMD Decile") +  # Use discrete color scale
-  theme_minimal(base_size = 14) +  
-  theme(
-    strip.text = element_text(face = "bold"),
-    legend.position = "bottom"  # Move legend for readability
-  ) +
-  ggtitle("Death rates England by IMD decile")  # Add title
+data_plot <- england_deathrates_imd %>%
+  mutate(colour_col = as.factor(imd_decile),
+         group_col = as.factor(imd_decile))
 
-# Print the plot
-print(p_imd)
+p <- rateplot(data_plot, 
+              ylab_plot = "Mortality rate (per 1000)",
+              legend_name = "IMD Decile",
+              plot_title = "Death rates England by IMD decile")
+
+print(p)
 
 ```
 
-### Comparison with publicly available estimates by LADs and sex
+### Death rates by decile midrates
+
+```{r graph-death-decmid}
+
+# Graph death rates for England by decile midrates
+
+data_plot <- england_deathrates_decilemid %>%
+  mutate(colour_col = as.factor(as.numeric(percentile)),
+         group_col = as.factor(as.numeric(percentile)))
+
+p <- rateplot(data_plot, 
+              ylab_plot = "Mortality rate (per 1000)",
+              legend_name = "Percentile",
+              plot_title = "Death rates England by decile midrates")
+
+print(p)
+
+```
+
+
+## Comparison with publicly available estimates by LADs and sex
 
 Comparison of age standardised rates with ONS data by LAD and our
 calculations but using weight from the European standard population. We
@@ -1026,28 +1057,10 @@ For colon cancer, in the absence of estimated for England, we adjusted incidence
 
 For lung cancer, we compare total Tracheal, bronchus, and lung cancer incidence for 2021 from GBD data (<https://vizhub.healthdata.org/gbd-results/>, accessed 12-Oct-25) with England lung cancer incidence statistics for 2021 (<https://digital.nhs.uk/data-and-information/publications/statistical/cancer-registration-statistics/england-2021---summary-counts-only/cancer-incidence>, accessed 12-Oct-25). GBD estimates 37,682 incident cases of Tracheal, bronchus, and lung cancer and estimates from England indicate 20,312. We assume that 54% of Tracheal, bronchus, and lung cancer is lung  cancer for both incidence and prevalence.
 
-```{r cleanup-disease}
-# disease data creates a large table, so begin by cleaning up everything except 
-# what will be required for the table
-
-rm(list = setdiff(ls(), 
-                  c(lsf.str(), ## keeps functions
-                    "england_lsoa_deaths", "deprivation_lsoa21",
-                    "pop_england_syoa_2023")))
-
-```
-
-
 ```{r gbd-data}
 # GBD data for all of England
 gbd <- readr::read_csv(unzip(here("health_data/original/gbd/IHME-GBD_2023_DATA-4a0d002f-1.zip"),
                                   "IHME-GBD_2023_DATA-4a0d002f-1.csv"))
-
-## if that is saving unwanted files, substitute:
-# csvfile <- unzip(here("health_data/original/gbd/IHME-GBD_2023_DATA-4a0d002f-1.zip"),
-#                  "IHME-GBD_2023_DATA-4a0d002f-1.csv")
-# gbd <- read_csv(csvfile)
-# file.remove(csvfile)
 
 gbdp <- gbd_process(gbd, year = 2023) %>%
   filter(measure %in% c("Prevalence", "Incidence"))
@@ -1106,7 +1119,7 @@ plot_data <- gbdpyr_interp %>%
   pivot_longer(cols = c(rate_1, val_interpolated), names_to = "type", values_to = "value")
 
 # Define output directory
-output_dir <- "health_data/images/inc_gbd_age_sex/"
+output_dir <- here("health_data/images/inc_gbd_age_sex")
 if (!dir.exists(output_dir)) {
   dir.create(output_dir, recursive = TRUE)
 }
@@ -1134,44 +1147,47 @@ for (i in 1:nrow(combinations)) {
     theme(panel.background = element_rect(fill = "white", color = "white"),
           plot.background = element_rect(fill = "white", color = "white"))
 # # Save the plot
-  ggsave(filename = paste0(output_dir, "plot_", i, ".png"), plot = p, width = 8, height = 6)
+  ggsave(filename = paste0(output_dir, "/plot_", i, ".png"), plot = p, width = 8, height = 6)
 }
 ```
 
-## Apply relative risks and add deprivation data
+## Apply relative risks, add deprivation data
 
 We apply the relative risks for each LSOA to the disease data.  We assume that the relative risks calculated above for mortality apply also to disease. *[This assumption may be reconsidered further.]*
 
-```{r gbd-relative-risk}
+```{r gbd-prepare}
 
-# Clean up again before creating large table
+# Output tables are very large, so lean up before creating
 rm(list = setdiff(ls(), 
                   c(lsf.str(), ## keeps functions
-                    "england_lsoa_deaths", "deprivation_lsoa21",
-                    "pop_england_syoa_2023", "gbdpyr_interp")))
+                    "england_lsoa_deaths", 
+                    "deprivation_lsoa11",  # update to 2021 if mortality is updated
+                    "population_england_syoa", # replace with 2023 pop if changed below
+                    "gbdpyr_interp")))  
 
-# Apply LSOA relative risks (as calculated for deaths) to disease data
-england_diseasetable_lsoa_imd <- gbdpyr_interp %>%
-  mutate(sex = recode(sex, "Female" = "Females", "Male" = "Males")) %>%
-  dplyr::select(measure, sex, cause, age = ageyr, rate = val_interpolated) %>%
-  left_join(england_lsoa_deaths %>%
-              dplyr::select(lsoa_code, lsoa_name, sex = gender, RR),
-            by = "sex", relationship = "many-to-many") %>%
-  mutate(rate1000 = rate * 1000 * RR) %>%
-  select(measure, lsoa_code, lsoa_name, cause, sex, age, rate1000, RR) %>%
-  # join deprivation data
-  left_join(deprivation_lsoa21 %>% dplyr::select(lsoa21_code, imd_decile), 
-            by = c("lsoa_code" = "lsoa21_code"))
+# We calculate incidence and prevalence separately, using the same functions, 
+# to avoid memory overflow issues as the tables are very large
 
-# save output with IMD 
-saveRDS(england_diseasetable_lsoa_imd, 
-        here("health_data/processed/england_lsoa21_diseaserates.rds"))
+# Function to apply LSOA relative risks (as calculated for deaths) to disease data
+# Note that this is 2011 LSOAs (based on the 'risks' table which is 
+# england_lsoa_deaths) - this should not matter as the results are aggregated;
+# the issue would disappear if deaths were re-done to use 2023 values
+# on 2021 LSOA boundaries
+calculateRRs <- function(interp_data, risks) {
+  output <- interp_data %>%
+    mutate(sex = recode(sex, "Female" = "Females", "Male" = "Males")) %>%
+    dplyr::select(measure, sex, cause, age = ageyr, rate = val_interpolated) %>%
+    left_join(risks %>%
+                dplyr::select(lsoa_code, lsoa_name, sex = gender, RR),
+              by = "sex", relationship = "many-to-many") %>%
+    mutate(rate1000 = rate * 1000 * RR) %>%
+    select(measure, lsoa_code, lsoa_name, cause, sex, age, rate1000, RR) %>%
+    # join deprivation data
+    left_join(deprivation_lsoa11 %>% dplyr::select(lsoa11_code, imd_decile), 
+              by = c("lsoa_code" = "lsoa11_code"))
 
-```
-
-## Disease rates by IMD
-
-```{r disease-imd}
+  return(output)
+}
 
 # stretch population table to cover ages 0 to 100 (age '90' is in fact 90+, so
 # this imputes the '90' value to each year 90 to 100) - inflates pop numbers for 
@@ -1179,254 +1195,392 @@ saveRDS(england_diseasetable_lsoa_imd,
 # calculate total population
 
 # calculate total pop
-age_90_data <- pop_england_syoa_2023 %>% filter(age == 90)
+# currently using 2018 population (for 2011 LSOAs)
+age_90_data <- population_england_syoa %>% filter(age == 90)
 
-# Create new rows for ageyr 96 to 100, repeating the values for val_interpolated
+# create new rows for ageyr 96 to 100, repeating the values for val_interpolated
 new_rows <- age_90_data %>%
   mutate(age = list(91:100)) %>%
   unnest(age) 
 
 # combine with population to age 90
-pop_stretched <- bind_rows(pop_england_syoa_2023, new_rows) %>%
+pop_stretched <- bind_rows(population_england_syoa, new_rows) %>%
+  rename(sex = gender) %>%
   dplyr::select(-lsoa_name)
 
+# # but better, if england_lsoa_deaths were re-done based on 2023 mortality data and
+# # 2021 LSOAs, would be to use 2023 pop data (for 2021 LSOAs)
+# age_90_data <- pop_england_syoa_2023 %>% filter(age == 90)
+# 
+# # create new rows for ageyr 96 to 100, repeating the values for val_interpolated
+# new_rows <- age_90_data %>%
+#   mutate(age = list(91:100)) %>%
+#   unnest(age) 
+# 
+# # combine with population to age 90
+# pop_stretched <- bind_rows(pop_england_syoa_2023, new_rows) %>%
+#   dplyr::select(-lsoa_name)
 
-# disease table by IMD
-england_diseasetable_imd <- england_diseasetable_lsoa_imd %>%
+# function to group by IMD deciles
+groupImd <- function(diseasetable, pop) {
+  output <- diseasetable %>%
+    
+    # join population
+    left_join(pop, by = c("lsoa_code", "sex", "age")) %>%
+    
+    # remove where zero population
+    filter(population > 0) %>%
+    
+    # aggregate to IMD
+    group_by(cause, imd_decile, age, sex) %>%
+    summarise(rate1000 = weighted.mean(rate1000, w = population),
+              .groups = "drop")
   
-  # join population
-  left_join(pop_stretched, by = c("lsoa_code", "sex", "age")) %>%
+  return(output)
+
+}
+
+# function to group by decile midrates
+groupDecMid <- function(diseasetable, pop) {
+  output <- diseasetable %>%
+    
+    # join population
+    left_join(pop, by = c("lsoa_code", "sex", "age")) %>%
+    
+    # remove where zero population
+    filter(population > 0) %>%
+    
+    # aggregate to mid-rate of each decile
+    group_by(cause, age, sex) %>%
+    summarise(
+      percentile_5 = wtd.quantile(rate1000, weights = population, probs = 0.05),
+      percentile_15 = wtd.quantile(rate1000, weights = population, probs = 0.15),
+      percentile_25 = wtd.quantile(rate1000, weights = population, probs = 0.25),
+      percentile_35 = wtd.quantile(rate1000, weights = population, probs = 0.35),
+      percentile_45 = wtd.quantile(rate1000, weights = population, probs = 0.45),
+      percentile_55 = wtd.quantile(rate1000, weights = population, probs = 0.55),
+      percentile_65 = wtd.quantile(rate1000, weights = population, probs = 0.65),
+      percentile_75 = wtd.quantile(rate1000, weights = population, probs = 0.75),
+      percentile_85 = wtd.quantile(rate1000, weights = population, probs = 0.85),
+      percentile_95 = wtd.quantile(rate1000, weights = population, probs = 0.95),
+      .groups = "drop") %>%
+  pivot_longer(
+    cols = starts_with("percentile_"),
+    names_to = "percentile",
+    values_to = "rate1000"
+  ) %>%
+  mutate(percentile = gsub("percentile_", "", percentile)) %>%
+  dplyr::select(cause,percentile, age, sex, rate1000)
   
-  # remove where zero population
-  filter(population > 0) %>%
-  
-  # aggregate to IMD
-  group_by(measure, cause, imd_decile, age, sex) %>%
-  summarise(rate1000 = weighted.mean(rate1000, w = population),
-            population = sum(population),
-            .groups = "drop")
+  return(output)
+
+}
+
+```
+
+### Incidence
+
+#### Incidence rates by LSOA
+
+```{r inc-lsoa}
+
+# apply relative risks to disease incidence data
+england_incidencetable_lsoa <- calculateRRs(gbdpyr_interp %>%
+                                              filter(measure == "Incidence"),
+                                            england_lsoa_deaths)
 
 # save output
-saveRDS(england_diseasetable_imd, 
-        here("health_data/processed/england_imd_diseaserates.rds"))
+saveRDS(england_incidencetable_lsoa, here("health_data/processed/england_lsoa11_incidencerates.rds"))
+  
+```
+
+#### Incidence rates grouped
+
+We summarise incidence rates in two ways: (1) grouping by IMD decile (weighted mean of the rates for all LSOAs in each IMD decile), and (2) finding the middle rate of the deciles for all LSOAs combined. 
+
+```{r inc-imd}
+
+# disease incidence table by IMD deciles
+england_incidencetable_imd <- groupImd(england_incidencetable_lsoa, pop_stretched)
+  
+# save output
+saveRDS(england_incidencetable_imd, 
+        here("health_data/processed/england_imd_incidencerates.rds"))
+
+# disease incidence table by decile midrates (very slow - couple of hours)
+england_incidencetable_decilemid <- groupDecMid(england_incidencetable_lsoa, pop_stretched)
+  
+# save output
+saveRDS(england_incidencetable_decilemid, 
+        here("health_data/processed/england_decilemid_incidencerates.rds"))
 
 ```
 
-## Graphs for checking results
+#### Graphs for checking results
 
-``` {r disease-graph-cleanup}
-# Clean up again before creating graphs from large table
-rm(list = setdiff(ls(), 
-                  c(lsf.str(), ## keeps functions
-                    "england_diseasetable_lsoa_imd",
-                    "england_diseasetable_imd")))
+##### Incidence rates by LSOA
 
-incidence_lsoa <- england_diseasetable_lsoa_imd %>% filter(measure == "Incidence")
-prevalence_lsoa <- england_diseasetable_lsoa_imd %>% filter(measure == "Prevalence")
-rm(england_diseasetable_lsoa_imd)
-
-```
-
-### Disease incidence rates for England
-
-Plots of disease incidence rates by LSOA are saved in the `images/inc_lsoa_age_sex` folder.  
+Plots of disease incidence rates by LSOA are saved in the `images/inc_lsoa` folder.  
 
 ```{r graph-incidence}
 
 # graphs of incidence of disease rates, by lsoa
 
 # Define output directory
-output_dir <- "health_data/images/inc_lsoa_age_sex/"
+output_dir <- here("health_data/images/inc_lsoa")
 if (!dir.exists(output_dir)) {
   dir.create(output_dir, recursive = TRUE)
 }
 
-for (i in unique(incidence_lsoa$cause)) {
-  data_plot <- incidence_lsoa %>%
+for (i in unique(england_incidencetable_lsoa$cause)) {
+  
+  data_plot <- england_incidencetable_lsoa %>%
     filter(cause == i) %>%
-    mutate(imd_decile = as.factor(imd_decile)) %>%
-    filter(!is.na(imd_decile))
+    mutate(colour_col = as.factor(imd_decile),
+           group_col = lsoa_code) 
   
-  plot_title <- paste("Disease incidence rates for England:", i)
-  
-  p <- ggplot(data_plot,
-              aes(x = age, y = rate1000,
-                  col = imd_decile, # colour by IMD decile
-                  group = lsoa_code)) +  # each LSOA has its own line
-    geom_line(lwd = 0.7, alpha = 0.5) +
-    facet_wrap (~ sex) +
-    ylab("Disease incidence rate (per 1000)") +
-    xlab("Age (years)") +
-    scale_y_continuous(trans = "log", breaks = c(0.2, 0.5, 1, 5, 10, 50, 100, 200)) +
-    scale_color_viridis_d(option = "C", name = "IMD Decile") +  # Use discrete color scale
-    theme_bw(base_size = 14) +  
-    theme(
-      strip.text = element_text(face = "bold"),
-      legend.position = "bottom"  ) +
-    ggtitle(plot_title)  
-  
-  # Save the plot
-  ggsave(filename = here(paste0(output_dir, "plot_", i, ".png")), plot = p, width = 12, height = 6)
+  p <- rateplot(data_plot, 
+                ylab_plot = "Disease incidence rate (per 1000)",
+                legend_name = "IMD Decile",
+                plot_title = paste("Incidence rates England:", i))
+
+  ggsave(filename = paste0(output_dir, "/plot_", i, ".png"), plot = p, width = 12, height = 6)
 
 }
 
 ```
 
-### Disease incidence rates for England by IMD
+##### Incidence rates by IMD deciles
 
-Plots of disease incidence rates for IMD deciles are saved in the `images/inc_imd_age_sex` folder.  
+Plots of disease incidence rates by IMD deciles are saved in the `images/inc_imd_decile` folder.  
 
 ```{r graph-incidence-imd}
 
 # graphs of incidence of disease rates, by imd groups
 
 # Define output directory
-output_dir <- "health_data/images/inc_imd_age_sex/"
+output_dir <- here("health_data/images/inc_imd_decile")
 if (!dir.exists(output_dir)) {
   dir.create(output_dir, recursive = TRUE)
 }
 
-for (i in unique(england_diseasetable_imd$cause)) {
-  data_plot <- england_diseasetable_imd %>%
-    filter(measure == "Incidence" & cause == i) %>%
-    mutate(imd_decile = as.factor(imd_decile)) %>%
-    filter(!is.na(imd_decile))
+for (i in unique(england_incidencetable_imd$cause)) {
+
+  data_plot <- england_incidencetable_imd %>%
+    filter(cause == i) %>%
+    mutate(colour_col = as.factor(imd_decile),
+           group_col = as.factor(imd_decile)) 
   
-  plot_title <- paste("Disease incidence rates for England by IMD decile:", i)
+  p <- rateplot(data_plot, 
+                ylab_plot = "Disease incidence rate (per 1000)",
+                legend_name = "IMD Decile",
+                plot_title = paste("Incidence rates England by IMD decile:", i))
+
+
+  ggsave(filename = paste0(output_dir, "/plot_", i, "_imd.png"), plot = p, width = 12, height = 6)
+
+}
+
+```
+##### Incidence rates by decile midrates
+
+Plots of disease incidence rates by decile midrates are saved in the `images/inc_decile_midrate` folder.  
+
+```{r graph-incidence-dec-midrate}
+
+# graphs of incidence of disease rates, by decile midrates
+
+# Define output directory
+output_dir <- here("health_data/images/inc_decile_midrate")
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+for (i in unique(england_incidencetable_decilemid$cause)) {
+
+  data_plot <- england_incidencetable_decilemid %>%
+    filter(cause == i) %>%
+  mutate(colour_col = as.factor(as.numeric(percentile)),
+         group_col = as.factor(as.numeric(percentile)))
   
-  p <- ggplot(data_plot,
-              aes(x = age, y = rate1000,
-                  col = imd_decile, # colour by IMD decile
-                  group = imd_decile)) +  # each imd_decile has its own line
-    geom_line(lwd = 0.7, alpha = 0.5) +
-    facet_wrap (~ sex) +
-    ylab("Disease incidence rate (per 1000)") +
-    xlab("Age (years)") +
-    scale_y_continuous(trans = "log", breaks = c(0.2, 0.5, 1, 5, 10, 50, 100, 200)) +
-    scale_color_viridis_d(option = "C", name = "IMD Decile") +  # Use discrete color scale
-    theme_bw(base_size = 14) +  
-    theme(
-      strip.text = element_text(face = "bold"),
-      legend.position = "bottom"  ) +
-    ggtitle(plot_title)  
-  
-  # Save the plot
-  ggsave(filename = here(paste0(output_dir, "plot_", i, "_imd.png")), plot = p, width = 12, height = 6)
+  p <- rateplot(data_plot, 
+                ylab_plot = "Disease incidence rate (per 1000)",
+                legend_name = "Percentile",
+                plot_title = paste("Incidence rates England by decile midrates:", i))
+
+  ggsave(filename = paste0(output_dir, "/plot_", i, "_decmid.png"), plot = p, width = 12, height = 6)
 
 }
 
 ```
 
-### Disease prevalence rates for England
+```{r cleanup-incidence}
 
-Plots of disease prevalence rates by LSOA are saved in the `images/prev_lsoa_age_sex` folder.  
+# remove the large incidence tables
+rm(england_incidencetable_lsoa, england_incidencetable_imd, 
+   england_incidencetable_decilemid)
+
+```
+
+### Prevalence
+
+#### Prevalence rates by LSOA
+
+```{r prev-lsoa}
+
+# apply relative risks to disease prevalence data
+england_prevalencetable_lsoa <- calculateRRs(gbdpyr_interp %>%
+                                               filter(measure == "Prevalence"),
+                                             england_lsoa_deaths)
+
+# save output
+saveRDS(england_prevalencetable_lsoa, here("health_data/processed/england_lsoa11_prevalencerates.rds"))
+  
+```
+
+#### Prevalence rates grouped
+
+We summarise prevalence rates in two ways: (1) grouping by IMD decile (weighted mean of the rates for all LSOAs in each IMD decile), and (2) finding the middle rate of the deciles for all LSOAs combined. 
+
+```{r prev-imd}
+
+# disease prevalence table by IMD deciles
+england_prevalencetable_imd <- groupImd(england_prevalencetable_lsoa, pop_stretched)
+  
+# save output
+saveRDS(england_prevalencetable_imd, 
+        here("health_data/processed/england_imd_prevalencerates.rds"))
+
+# disease prevalence table by decile midrates (very slow - couple of hours)
+england_prevalencetable_decilemid <- groupDecMid(england_prevalencetable_lsoa, pop_stretched)
+  
+# save output
+saveRDS(england_prevalencetable_decilemid, 
+        here("health_data/processed/england_decilemid_prevalencerates.rds"))
+
+```
+
+#### Graphs for checking results
+
+##### Prevalence rates by LSOA
+
+Plots of disease prevalence rates by LSOA are saved in the `images/prev_lsoa` folder.  
 
 ```{r graph-prevalence}
 
 # graphs of prevalence of disease rates, by lsoa
 
 # Define output directory
-output_dir <- "health_data/images/prev_lsoa_age_sex/"
+output_dir <- here("health_data/images/prev_lsoa")
 if (!dir.exists(output_dir)) {
   dir.create(output_dir, recursive = TRUE)
 }
 
-for (i in unique(prevalence_lsoa$cause)) {
-  data_plot <- prevalence_lsoa %>%
+for (i in unique(england_prevalencetable_lsoa$cause)) {
+  
+  data_plot <- england_prevalencetable_lsoa %>%
     filter(cause == i) %>%
-    mutate(imd_decile = as.factor(imd_decile)) %>%
-    filter(!is.na(imd_decile))
+    mutate(colour_col = as.factor(imd_decile),
+           group_col = lsoa_code) 
   
-  plot_title <- paste("Disease prevalence rates for England:", i)
-  
-  p <- ggplot(data_plot,
-              aes(x = age, y = rate1000,
-                  col = imd_decile, # colour by IMD decile
-                  group = lsoa_code)) +  # each LSOA has its own line
-    geom_line(lwd = 0.7, alpha = 0.5) +
-    facet_wrap (~ sex) +
-    ylab("Disease prevalence rate (per 1000)") +
-    xlab("Age (years)") +
-    scale_y_continuous(trans = "log", breaks = c(0.2, 0.5, 1, 5, 10, 50, 100, 200)) +
-    scale_color_viridis_d(option = "C", name = "IMD Decile") +  # Use discrete color scale
-    theme_bw(base_size = 14) +  
-    theme(
-      strip.text = element_text(face = "bold"),
-      legend.position = "bottom"  ) +
-    ggtitle(plot_title)  
-  
-  # Save the plot
-  ggsave(filename = here(paste0(output_dir, "plot_", i, ".png")), plot = p, width = 12, height = 6)
+  p <- rateplot(data_plot, 
+                ylab_plot = "Disease prevalence rate (per 1000)",
+                legend_name = "IMD Decile",
+                plot_title = paste("prevalence rates England:", i))
+
+  ggsave(filename = paste0(output_dir, "/plot_", i, ".png"), plot = p, width = 12, height = 6)
 
 }
 
 ```
 
-### Disease prevalence rates for England by IMD
+##### Prevalence rates by IMD deciles
 
-Plots of disease prevalence rates for IMD deciles are saved in the `images/prev_imd_age_sex` folder.  
+Plots of disease prevalence rates by IMD deciles are saved in the `images/prev_imd_decile` folder.  
 
 ```{r graph-prevalence-imd}
 
 # graphs of prevalence of disease rates, by imd groups
 
 # Define output directory
-output_dir <- "health_data/images/prev_imd_age_sex/"
+output_dir <- here("health_data/images/prev_imd_decile")
 if (!dir.exists(output_dir)) {
   dir.create(output_dir, recursive = TRUE)
 }
 
-for (i in unique(england_diseasetable_imd$cause)) {
-  data_plot <- england_diseasetable_imd %>%
-    filter(measure == "Prevalence" & cause == i) %>%
-    mutate(imd_decile = as.factor(imd_decile)) %>%
-    filter(!is.na(imd_decile))
+for (i in unique(england_prevalencetable_imd$cause)) {
+
+  data_plot <- england_prevalencetable_imd %>%
+    filter(cause == i) %>%
+    mutate(colour_col = as.factor(imd_decile),
+           group_col = as.factor(imd_decile)) 
   
-  plot_title <- paste("Disease prevalence rates for England by IMD decile:", i)
-  
-  p <- ggplot(data_plot,
-              aes(x = age, y = rate1000,
-                  col = imd_decile, # colour by IMD decile
-                  group = imd_decile)) +  # each imd_decile has its own line
-    geom_line(lwd = 0.7, alpha = 0.5) +
-    facet_wrap (~ sex) +
-    ylab("Disease prevalence rate (per 1000)") +
-    xlab("Age (years)") +
-    scale_y_continuous(trans = "log", breaks = c(0.2, 0.5, 1, 5, 10, 50, 100, 200)) +
-    scale_color_viridis_d(option = "C", name = "IMD Decile") +  # Use discrete color scale
-    theme_bw(base_size = 14) +  
-    theme(
-      strip.text = element_text(face = "bold"),
-      legend.position = "bottom"  ) +
-    ggtitle(plot_title)  
-  
-  # Save the plot
-  ggsave(filename = here(paste0(output_dir, "plot_", i, "_imd.png")), plot = p, width = 12, height = 6)
+  p <- rateplot(data_plot, 
+                ylab_plot = "Disease prevalence rate (per 1000)",
+                legend_name = "IMD Decile",
+                plot_title = paste("prevalence rates England by IMD decile:", i))
+
+
+  ggsave(filename = paste0(output_dir, "/plot_", i, "_imd.png"), plot = p, width = 12, height = 6)
 
 }
 
 ```
 
+##### Prevalence rates by decile midrates
 
+Plots of disease prevalence rates by decile midrates are saved in the `images/prev_decile_midrate` folder.  
 
-# Combining All-cause Mortality and Disease Incidence Data (by IMD deciles)
+```{r graph-prevalence-dec-midrate}
 
-Saves the files required by the health model: `health_transitions_prevalence.csv` and `health_transitions_raw.csv`.  *[To confirm that 'raw' is correct.]*
+# graphs of prevalence of disease rates, by decile midrates
 
-```{r cleanup-combination}
+# Define output directory
+output_dir <- here("health_data/images/prev_decile_midrate")
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
 
-# clean up to remove large tables
-rm(list = setdiff(ls(), lsf.str()))  # keep functions
+for (i in unique(england_prevalencetable_decilemid$cause)) {
+
+  data_plot <- england_prevalencetable_decilemid %>%
+    filter(cause == i) %>%
+  mutate(colour_col = as.factor(as.numeric(percentile)),
+         group_col = as.factor(as.numeric(percentile)))
+  
+  p <- rateplot(data_plot, 
+                ylab_plot = "Disease prevalence rate (per 1000)",
+                legend_name = "Percentile",
+                plot_title = paste("prevalence rates England by decile midrates:", i))
+
+  ggsave(filename = paste0(output_dir, "/plot_", i, "_decmid.png"), plot = p, width = 12, height = 6)
+
+}
+
+```
+
+```{r cleanup-prevalence}
+
+# remove the large prevalence tables
+rm(england_prevalencetable_lsoa, england_prevalencetable_imd, 
+   england_prevalencetable_decilemid)
 
 ```
 
 
+# Combining All-cause Mortality and Disease Incidence Data (by IMD deciles)
+
+Saves the files required by the health model: `health_transitions_prevalence.csv` and `health_transitions_raw.csv`. 
+
+Note that the output rates are raw rates.  *We may later adjust them for levels of physical activity in the population.*
+
 ```{r combination}
 
-diseases <- readRDS(here("health_data/processed/england_imd_diseaserates.rds"))
 allcause <- readRDS(here("health_data/processed/england_imd_mxrates.rds"))
+incidence <- readRDS(here("health_data/processed/england_imd_incidencerates.rds"))
+prevalence <- readRDS(here("health_data/processed/england_imd_prevalencerates.rds"))
 
-# Process data ## CHECK THAT CONVERSION OF rate1000 TO rate IS CORRECT
+# Process data 
 
 allcause<- allcause %>%
   mutate(cause = "all_cause_mortality",
@@ -1438,21 +1592,29 @@ allcause<- allcause %>%
   dplyr::select(age, sex, location_code, cause, rate = rate1000, measure) %>%
   mutate(location_type = "imd_decile")
 
-diseases <- diseases %>% 
-  mutate(measure = tolower(measure),
+incidence <- incidence %>% 
+  mutate(measure = "incidence",
          cause = tolower(cause),
          socio = NA) %>% 
   mutate(sex = case_when(sex == "Males" ~ "male",
                                  sex=="Females" ~ "female"),
          location_code = imd_decile,
-         age = as.numeric(age)) %>%
-  dplyr::select(age, sex, location_code, cause, rate = rate1000, measure) %>%
+         age = as.numeric(age),
+         rate = rate1000 / 1000) %>%
+  dplyr::select(age, sex, location_code, cause, rate, measure) %>%
   mutate(location_type = "imd_decile")
 
-incidence <- diseases %>% filter(measure == "incidence") 
-prevalence <- diseases %>% filter(measure == "prevalence") %>%
-  mutate(sex=case_when(sex == "male" ~ 1, 
-                       sex == "female" ~ 2))
+prevalence <- prevalence %>% 
+  mutate(measure = "prevalence",
+         cause = tolower(cause),
+         socio = NA) %>% 
+  mutate(sex = case_when(sex == "Males" ~ 1,
+                         sex=="Females" ~ 2),
+         location_code = imd_decile,
+         age = as.numeric(age),
+         rate = rate1000 / 1000) %>%
+  dplyr::select(age, sex, location_code, cause, rate, measure) %>%
+  mutate(location_type = "imd_decile")
 
 health_transitions <- bind_rows(allcause, incidence)
 
@@ -1461,6 +1623,7 @@ health_transitions <- bind_rows(allcause, incidence)
 write.csv(prevalence, here("health_data/processed/health_transitions_prevalence.csv"),
           row.names = FALSE)
 
-write.csv(health_transitions, here("health_data/processed/health_transitions_raw.csv"),
-          row.names = FALSE) ### DOES SOMETHING ELSE HAPPEN TO 'RAW'?
+write.csv(health_transitions, here("health_data/processed/health_transitions.csv"),
+          row.names = FALSE) 
+
 ```
