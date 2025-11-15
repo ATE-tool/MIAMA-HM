@@ -48,3 +48,7 @@ In `health_data.qmd`, we calculate disease rates by LSOA by applying the LSOA re
 ### Health data - raw rates
 
 In `health_data.qmd`, the rates contained in the final health transitions outputs are raw rates, not adjusted for levels of physical activity in the population. We may want to make such adjustments.
+
+### Rep pop - MMETS values
+
+In `representative_population.qmd`, currently we select 5 MMETS values for each age and sex combination, being the middle of each quintile, ie the 10th, 30th, 50th, 70th and 90th percentile. We may want to consider the selection of the values further. In particular, it may be more realistic to select lower percentile values.

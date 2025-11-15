@@ -35,6 +35,7 @@ library(gt)         # Pretty tables
 library(here)       # File path management
 library(haven)      # Read .dta files
 library(Hmisc)      # Quantiles
+library(drpa)       # Dose-response function
 
 # Set root directory one level up from current directory
 knitr::opts_knit$set(root.dir = dirname(getwd()))
@@ -44,75 +45,30 @@ options("scipen"=100, "digits"=4)
 
 ```
 
-# Mortality deciles
+# Base population
 
-A life table for England is  created in `health_data.Rmd`, based on (1) mortality statistics by age and sex, and (2) relative risks by lower layer super output areas (LSOAs), aggregated by local authority districts (LADs) and index of multiple deprivation (IMD).
+Base population is each combination of age (0 to 100), sex (male or female) and risk group (1 to 10, which will correspond to IMD deciles used in the health data). This base population will be joined below to 5 levels of physical activity, creating 5 scenarios.  In *[a subsequent step/the health model]*, each original individual will be replicated 1000 times.
 
-The following plots show deciles of mortality rates by age and sex, calculated using the LAD/IMD lifetable.
-
-```{r}
-
-# load life tables
-
-england_lifetable_lad_imd <- read.csv(here("health_data/processed/england_lifetable_lad_imd.csv"))
-
-# calculate deciles, weighted by population, picking the middle of each decile
-
-deciles <- england_lifetable_lad_imd %>%
-  group_by(sex, age) %>%
-  summarise(
-    decile_5 = wtd.quantile(rate1000, weights = population, probs = 0.05, na.rm = TRUE),
-    decile_15 = wtd.quantile(rate1000, weights = population, probs = 0.15, na.rm = TRUE),
-    decile_25 = wtd.quantile(rate1000, weights = population, probs = 0.25, na.rm = TRUE),
-    decile_35 = wtd.quantile(rate1000, weights = population, probs = 0.35, na.rm = TRUE),
-    decile_45 = wtd.quantile(rate1000, weights = population, probs = 0.45, na.rm = TRUE),
-    decile_55 = wtd.quantile(rate1000, weights = population, probs = 0.55, na.rm = TRUE),
-    decile_65 = wtd.quantile(rate1000, weights = population, probs = 0.65, na.rm = TRUE),
-    decile_75 = wtd.quantile(rate1000, weights = population, probs = 0.75, na.rm = TRUE),
-    decile_85 = wtd.quantile(rate1000, weights = population, probs = 0.85, na.rm = TRUE),
-    decile_95 = wtd.quantile(rate1000, weights = population, probs = 0.95, na.rm = TRUE)) %>%
-  ungroup()
-      
-
-# plot preparation
-deciles_long <- deciles %>%
-  pivot_longer(
-    cols = starts_with("decile_"),
-    names_to = "decile",
-    values_to = "rate1000"
-  ) %>%
-  mutate(decile = factor(decile, 
-                         levels = paste0("decile_", c(5,15,25,35,45,55,65,75,85,95)),
-                         labels = paste0("Decile ", c(5,15,25,35,45,55,65,75,85,95))))
-
-p_deciles <- ggplot(deciles_long, aes(x = age, y = rate1000, color = decile)) +
-  geom_line(linewidth = 0.8) +
-  facet_wrap(~ sex) +
-  scale_color_brewer(palette = "RdYlBu", name = "Decile") +  # good for ordinal data
-  labs(
-    x = "Age (years)",
-    y = "Mortality rate (per 1000)",
-    title = "Weighted deciles of mortality rate by age and sex"
-  ) +
-  scale_y_log10() +
-  theme_minimal(base_size = 14) +
-  theme(
-    strip.text = element_text(face = "bold"),
-    legend.position = "bottom"
-  )
-
-print(p_deciles)
+```{r base-pop}
+# age, sex and risk group (which will correspond to IMD decile)
+rep_pop_base <- crossing(
+  # age, sex and risk group
+  age = 0:100,
+  sex = c("male", "female"),
+  risk_group = 1:10
+) %>%
+  # id for each base individual, as first column
+  mutate(id_base = row_number()) %>%
+  relocate(id_base)
 
 ```
 
 
-# mMETs distribution
+# MMETs values
 
-The synthetic population of 3 million people, with their physical activity details (walking, cycling and sport), is used to calculate Marginal Metabolic Equivalent of Tasks (mMET) values.
+The synthetic population of approx 3 million people, with their physical activity details (walking, cycling and sport), is used to calculate Marginal Metabolic Equivalent of Tasks (MMET) values.
 
-The following plots show the distribution of the mMET values by age and sex.
-
-```{r}
+```{r calculate-mmets}
 
 # load synthetic population
 sp <- read_dta(here("synthetic_pop/SPindivid_CensusNTSALS.dta"))
@@ -132,6 +88,11 @@ sp_mmets <- sp %>%
          sex = as.factor(ifelse(female == 1, "Females", "Males"))) %>%
   # keep required fields
   dplyr::select(census_id, sex, age1year, mmets)
+```
+
+The following plots show the distribution of the MMET values by age and sex.
+
+```{r plot-mmets-distrib}
 
 # plot the densities
 # 1. Bin ages into 10-year groups and factorize
@@ -213,75 +174,126 @@ print(p_mmets_percentiles)
 
 ```
 
-# Representative population
+A set of 5 MMETs values for each age and sex combination is calculated. The values used are the middle of the quintile values, ie the 10th, 30th, 50th, 70th and 90th percentile. *The selection of these values may be considered further.*
 
-The representative population is [10,100 people: 101 ageyears * 2 genders * 10 mortality risk groups * 5 mMETs groups.]
+```{r mmets-values}
 
-The mortality groups are the middle of the decile values; the mMETs groups are the middle of the quintile values.
-
-```{r}
-# mMETs quintiles
-mmets_percentiles <- sp_mmets %>%  # SP note - as above, this is altered to convert NA sport_wkhr  (for age < 5) to zeros
+# mMETs quintiles (altered above to convert NA sport_wkhr (for age < 5) to zeros)
+mmets_pp <- sp_mmets %>%  
   rename(age = age1year) %>%
+  mutate(sex = case_when(sex == "Females" ~ "female",
+                         sex == "Males" ~ "male")) %>%
   
   # calculate quintiles
   group_by(sex, age) %>%
-  summarise(quintile_10 = quantile(mmets, probs = 0.1, na.rm = TRUE),
-            quintile_30 = quantile(mmets, probs = 0.3, na.rm = TRUE),
-            quintile_50 = quantile(mmets, probs = 0.5, na.rm = TRUE),
-            quintile_70 = quantile(mmets, probs = 0.7, na.rm = TRUE),
-            quintile_90 = quantile(mmets, probs = 0.9, na.rm = TRUE)) %>%
+  summarise(percentile_10 = quantile(mmets, probs = 0.1, na.rm = TRUE),
+            percentile_30 = quantile(mmets, probs = 0.3, na.rm = TRUE),
+            percentile_50 = quantile(mmets, probs = 0.5, na.rm = TRUE),
+            percentile_70 = quantile(mmets, probs = 0.7, na.rm = TRUE),
+            percentile_90 = quantile(mmets, probs = 0.9, na.rm = TRUE)) %>%
   ungroup() %>%
   
   # expand the age sequence to include 90–100 for each sex
   complete(sex, age = 0:100) %>%
   
   # assume mMETs is zero for ave > 90
-  mutate(across(starts_with("quintile"),
+  mutate(across(starts_with("percentile"),
                 ~ if_else(age > 89, 0, .x))) %>%
 
   # pivot longer to produce one row per qunitile
   pivot_longer(
-    cols = starts_with("quintile_"),
-    names_to = "mmets_quintile",
+    cols = starts_with("percentile_"),
+    names_to = "mmets_group",
     values_to = "mmets"
   ) %>%
-  mutate(mmets_quintile = factor(mmets_quintile, 
-                         levels = paste0("quintile_", c(10,30,50,70,90)))) 
-
-# representative population using LAD deciles
-rep_pop <- england_lifetable_lad_imd %>%
-  
-  # calculate deciles [or, as above, maybe should be 5th, 15th etc percentiles]
-  group_by(sex, age) %>%
-  summarise(
-    decile_5 = wtd.quantile(rate1000, weights = population, probs = 0.05, na.rm = TRUE),
-    decile_15 = wtd.quantile(rate1000, weights = population, probs = 0.15, na.rm = TRUE),
-    decile_25 = wtd.quantile(rate1000, weights = population, probs = 0.25, na.rm = TRUE),
-    decile_35 = wtd.quantile(rate1000, weights = population, probs = 0.35, na.rm = TRUE),
-    decile_45 = wtd.quantile(rate1000, weights = population, probs = 0.45, na.rm = TRUE),
-    decile_55 = wtd.quantile(rate1000, weights = population, probs = 0.55, na.rm = TRUE),
-    decile_65 = wtd.quantile(rate1000, weights = population, probs = 0.65, na.rm = TRUE),
-    decile_75 = wtd.quantile(rate1000, weights = population, probs = 0.75, na.rm = TRUE),
-    decile_85 = wtd.quantile(rate1000, weights = population, probs = 0.85, na.rm = TRUE),
-    decile_95 = wtd.quantile(rate1000, weights = population, probs = 0.95, na.rm = TRUE)) %>%
-  ungroup() %>%
-  
-  # pivot longer to produce one row per decile
-  pivot_longer(
-    cols = starts_with("decile_"),
-    names_to = "mortality_decile",
-    values_to = "rate1000"
-  ) %>%
-  mutate(mortality_decile = factor(mortality_decile, 
-                                   levels = paste0("decile_", c(5,15,25,35,45,55,65,75,85,95)))) %>%
-  
-  # add mMETs quintiles 
-  left_join(mmets_percentiles, by = c("sex", "age"), relationship = "many-to-many")
-
-
-# save output
-write.csv(rep_pop, here("health_data/processed/rep_pop.csv"), row.names= FALSE)
-
+  mutate(mmets_group = factor(mmets_group, 
+                         levels = paste0("percentile_", c(10,30,50,70,90)))) 
 
 ```
+
+# Calculate physical activity relative risks
+
+The physical activity relative risks are calculated based on the MMETs values, using the `drpa` package.  As a deterministic method of calculating the values is used, these risks need only be calculated once for each base individual (rather than for each individual's 1000 replications).
+
+```{r pa-risks}
+
+# list of disease names
+diseases <- read.csv(here("health_data/processed/health_transitions.csv")) %>%
+  pull(cause) %>%
+  unique() %>%
+  # update names to match drpa requirements
+  str_replace_all("_", "-") %>%
+  str_replace_all("’", "'")
+
+
+# assign relative risks
+for (i in seq_along(diseases)) {
+  
+  disease <- diseases[i]
+  new_colname <- paste0("rr_PHYSICAL_ACTIVITY_", disease)
+  
+  mmets_pp[[new_colname]] <- 
+    ifelse(!(mmets_pp$sex == "male" & disease %in% c("breast-cancer", "endometrial-cancer")),
+           # calculate the dose response except for male breast/endometrial cancer
+           drpa::dose_response(
+             cause = disease,
+             outcome_type = ifelse(disease == "diabetes", "non-fatal", "fatal-and-non-fatal"),
+             dose = mmets_pp$mmets,
+             quantile = 0.5,  # deterministic
+             censor_method = "75thPercentile",
+             confidence_intervals = FALSE
+           )$rr, 
+           # assign 1 for male breast/endometrial cancer
+           1)
+  
+}
+
+```
+
+# Representative population with PA risks
+
+The physical activity risks, for each of the MMETS values, are joined to the base representative population, to create the output representative population*[, and replicated by 1000. / . The representative population will be replicated by 1000 in the health model.]*
+
+```{r rep-pop}
+
+# join mmets 
+rep_pop <- rep_pop_base %>%
+  
+  # join the mmets values
+  left_join(mmets_pp, by = c("age", "sex"), relationship = "many-to-many")
+
+# save output
+write.csv(rep_pop, here("health_data/processed/rep_pop.csv"), row.names = FALSE)
+
+
+# Replication code (for the health model)
+
+# number of times to replicate each original individual
+replic_no <- 1000
+
+# replication with id
+synth_pop <- rep_pop %>%
+  
+  # replicate each base individual 1000×
+  slice(rep(1:n(), each = replic_no)) %>%
+  
+  # create a unique replicate index per base individual
+  group_by(id_base) %>%
+  mutate(rep_index = rep(1:replic_no, times = n() / replic_no)) %>%
+  ungroup() %>%
+  
+  # assign a unique ID per replicated individual
+  # all mmets_group rows of the same replicate share the same ID
+  group_by(id_base, rep_index) %>%
+  mutate(id = cur_group_id()) %>%
+  ungroup() %>%
+  
+  #  move id to the front, drop temporary columns
+  relocate(id) %>%
+  select(-rep_index)
+
+```
+
+# Assign initial disease state based on prevalence
+
+UP TO HERE
